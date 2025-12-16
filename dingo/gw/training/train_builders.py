@@ -161,7 +161,9 @@ def set_train_transforms(wfd, data_settings, asd_dataset_path, omit_transforms=N
     # off with zero_noise option in data_settings.
     if not data_settings.get("zero_noise", False):
         transforms.append(AddWhiteNoiseComplex())
-    transforms.append(AddAntiglitch(domain))
+    # Only add the glitch transform if compatible priors are given
+    if any(("glitch" in prior for prior in extrinsic_prior_dict)):
+        transforms.append(AddAntiglitch(domain))
     transforms.append(
         SelectStandardizeRepackageParameters(
             {
