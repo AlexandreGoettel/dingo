@@ -22,6 +22,7 @@ from dingo.gw.transforms import (
     SampleExtrinsicParameters,
     GetDetectorTimes,
     CropMaskStrainRandom,
+    AddAntiglitch,
 )
 from dingo.gw.noise.asd_dataset import ASDDataset
 from dingo.gw.prior import default_inference_parameters
@@ -160,6 +161,7 @@ def set_train_transforms(wfd, data_settings, asd_dataset_path, omit_transforms=N
     # off with zero_noise option in data_settings.
     if not data_settings.get("zero_noise", False):
         transforms.append(AddWhiteNoiseComplex())
+    transforms.append(AddAntiglitch(domain))
     transforms.append(
         SelectStandardizeRepackageParameters(
             {
@@ -255,6 +257,7 @@ def build_svd_for_embedding_network(
             SelectStandardizeRepackageParameters,
             UnpackDict,
             CropMaskStrainRandom,
+            AddAntiglitch,
         ],
     )
 
