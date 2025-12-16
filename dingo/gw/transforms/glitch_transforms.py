@@ -6,10 +6,10 @@ from dingo.gw.domains import UniformFrequencyDomain
 def antiglitch_model(
     fk: np.ndarray,
     amp: np.ndarray,
-    gamma: np.adarray,
-    f0: np.adarray,
-    phi: np.adarray,
-    t0: np.adarray
+    gamma: np.ndarray,
+    f0: np.ndarray,
+    phi: np.ndarray,
+    t0: np.ndarray
 ) -> np.ndarray:
     """
     Return FD log-normal glitch.
@@ -58,16 +58,30 @@ class AddAntiglitch(object):
         }
 
     def __call__(self, input_sample):
-        # Sample parameters
         sample = input_sample.copy()
-        sample["extrinsic_parameters"]["glitch_time"] += sample["parameters"]["geocent_time"]
-        glitch = antiglitch_model(
-            self.domain.sample_frequencies,
-            **{v: sample["extrinsic_parameters"][k] for k, v in self.param_map.items()}
-        )
-        # TODO: per-ifo priors
-        glitch_strains = {}
-        for ifo, pure_strain in sample["waveform"].items():
-            glitch_strains[ifo] = pure_strain + glitch
-        sample["waveform"] = glitch_strains
+
+        # Check if ifo-related glitch variables are in the prior
+        ifos = set(sample["waveform"].keys())
+        for ifo in sample["waveform"].keys():
+            for name in self.param_map:
+                if f"{ifo}_{name}" not in sample["extrinsic_parameters"]:
+                    ifos.remove(ifo)
+                    break
+
+        if not ifos:
+            raise ValueError("AddAntiglitch was called with no compatible prior.")
+
+        for ifo in ifos:
+            # Place the glitch time prior to be relative to geocent_time
+            sample["extrinsic_parameters"][f"{ifo}_glitch_time"]\
+                += sample["parameters"]["geocent_time"]
+
+            glitch = antiglitch_model(
+                self.domain.sample_frequencies,
+                **{
+                    v: sample["extrinsic_parameters"][f"{ifo}_{k}"]
+                    for k, v in self.param_map.items()
+                },
+            )
+            sample["waveform"][ifo] += glitch
         return sample
