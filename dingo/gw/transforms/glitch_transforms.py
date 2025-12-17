@@ -34,10 +34,12 @@ def antiglitch_model(
     np.ndarray
         The FD log-normal glitch.
     """
+    mask = fk > 0
+    h0 = np.zeros((len(f0), len(fk)), dtype=np.complex128)
     fk = fk.reshape(1, -1)
-    h0 = np.exp(-0.5 * gamma.reshape(-1, 1) * (np.log(fk) - np.log(f0.reshape(-1, 1))) ** 2)
+
+    h0[..., mask] = np.exp(-0.5 * gamma.reshape(-1, 1) * (np.log(fk[..., mask]) - np.log(f0.reshape(-1, 1))) ** 2)
     phase_term = 1j * phi.reshape(-1, 1) - 2j * np.pi * fk * t0.reshape(-1, 1)
-    # Note: the norm term could become obsolete after SNR calibration
     norm = np.sum(np.abs(h0), axis=1, keepdims=True)
     return amp.reshape(-1, 1) * np.exp(phase_term) * h0 / norm
 
