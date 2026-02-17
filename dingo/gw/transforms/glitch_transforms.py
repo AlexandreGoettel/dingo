@@ -49,8 +49,10 @@ class AddAntiglitch(object):
 
     def __init__(self,
                  domain: UniformFrequencyDomain,
+                 colour: bool = False,
     ):
         self.domain = domain
+        self.colour = colour
         self.param_map = {
             "glitch_time": "t0",
             "glitch_amp": "amp",
@@ -66,24 +68,33 @@ class AddAntiglitch(object):
         ifos = set(sample["waveform"].keys())
         for ifo in sample["waveform"].keys():
             for name in self.param_map:
-                if f"{ifo}_{name}" not in sample["extrinsic_parameters"]:
+                if f"{ifo}_{name}" not in sample["extrinsic_parameters"]\
+                        and f"{ifo}_{name}" not in sample.get("parameters"):
                     ifos.remove(ifo)
                     break
 
-        if not ifos:
-            raise ValueError("AddAntiglitch was called with no compatible prior.")
-
         for ifo in ifos:
             # Place the glitch time prior to be relative to geocent_time
-            sample["extrinsic_parameters"][f"{ifo}_glitch_time"]\
-                += sample["parameters"]["geocent_time"]
+            params = {}
+            for source in sample.get("parameters", {}), sample.get("extrinsic_parameters", {}):
+                params.update(source)
+
+            params[f"{ifo}_glitch_time"] += params["geocent_time"]
 
             glitch = antiglitch_model(
                 self.domain.sample_frequencies,
                 **{
-                    v: sample["extrinsic_parameters"][f"{ifo}_{k}"]
+                    v: np.atleast_1d(params[f"{ifo}_{k}"])
                     for k, v in self.param_map.items()
                 },
             )
-            sample["waveform"][ifo] += glitch
+
+            if self.colour:  # "un-whiten"
+                glitch *= sample["asds"][ifo] * self.domain.noise_std
+
+            if len(sample["waveform"][ifo].shape) == 1:
+                sample["waveform"][ifo] += glitch[0]
+            else:  # batched, ergo len(shape) == 2
+                sample["waveform"][ifo] += glitch
+
         return sample
