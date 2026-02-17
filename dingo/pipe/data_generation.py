@@ -23,6 +23,7 @@ from dingo.gw.data.event_dataset import EventDataset
 from dingo.gw.domains import UniformFrequencyDomain, build_domain_from_model_metadata
 from dingo.gw.injection import Injection
 from dingo.pipe.parser import create_parser
+from dingo.gw.transforms import AddAntiglitch
 
 logger.name = "dingo_pipe"
 
@@ -318,8 +319,15 @@ class DataGenerationInput(BilbyDataGenerationInput):
         theta["geocent_time"] -= self.trigger_time
         signal = injection.signal(theta)
 
-        # Add signal to interferometer data
+        # If used, add (coloured) glitch
         domain = injection.data_domain
+        if any(("glitch" in param for param in theta)):
+            glitch_transform = AddAntiglitch(domain, colour=True)
+            signal["asds"] = {ifo.name: self._get_asd_from_ifo(ifo, domain)
+                              for ifo in self.interferometers}
+            signal = glitch_transform(signal)
+
+        # Add signal to interferometer data
         for ifo in self.interferometers:
             s = signal["waveform"][ifo.name]
             s = domain.time_translate_data(s, -self.post_trigger_duration)
@@ -377,16 +385,12 @@ class DataGenerationInput(BilbyDataGenerationInput):
         data = {"waveform": {}, "asds": {}}  # TODO: Rename these keys.
         for ifo in self.interferometers:
             strain = ifo.strain_data.frequency_domain_strain
-            frequency_array = ifo.strain_data.frequency_array
-            asd = ifo.power_spectral_density.get_amplitude_spectral_density_array(
-                frequency_array
-            )
 
             # These arrays extend up to self.sampling_frequency / 2. Truncate them to
             # the model maximum frequency, and also set the ASD to 1.0 below model
             # minimum frequency.
+            asd = self._get_asd_from_ifo(ifo, domain, low_value=1.0)
             strain = domain.update_data(strain)
-            asd = domain.update_data(asd, low_value=1.0)
 
             # Dingo expects data to have trigger time 0, so we apply a cyclic time shift
             # by the post-trigger duration.
@@ -522,6 +526,20 @@ class DataGenerationInput(BilbyDataGenerationInput):
         priors = super()._get_priors(add_time=add_time)
         priors.update(PriorDict(self.prior_dict_updates))
         return priors
+
+    @staticmethod
+    def _get_asd_from_ifo(ifo, domain, low_value=1.0):
+        """
+        Get the ASD as an ndarray following the ifo's frequency array.
+
+        Truncate it above fmax and set to low_value below fmin.
+        """
+        frequency_array = ifo.strain_data.frequency_array
+        asd = ifo.power_spectral_density.get_amplitude_spectral_density_array(
+            frequency_array
+        )
+        asd = domain.update_data(asd, low_value=low_value)
+        return asd
 
 
 def create_generation_parser():
