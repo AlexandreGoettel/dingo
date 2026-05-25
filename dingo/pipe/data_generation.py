@@ -338,6 +338,24 @@ class DataGenerationInput(BilbyDataGenerationInput):
             )
             ifo.meta_data["matched_filter_SNR"] = ifo.matched_filter_snr(signal=s)
 
+    def prepare_and_save_data_dump():
+        """DINGO wrapper for bilby_pipe's save_data_dump()."""
+        self.waveform_arguments_dict = self.injection_waveform_arguments
+        self.prior_dict = self.priors
+        self.likelihood_type = "GravitationalWaveTransient"
+        self.calibration_marginalization = False
+        self.phase_marginalization = False
+        self.time_marginalization = False
+        self.distance_marginalization = False
+        self.number_of_response_curves = 0
+        self._distance_marginalization_lookup_table = None
+        self.reference_frame = "sky"
+        self.fiducial_parameters = None
+        self.update_fiducial_parameters = None
+        self.epsilon = None
+        self.jitter_time = True
+        self.save_data_dump()
+
     def save_hdf5(self):
         """
         Save frequency-domain strain and ASDs as DingoDataset HDF5 format.
@@ -361,21 +379,7 @@ class DataGenerationInput(BilbyDataGenerationInput):
         if self.save_bilby_data_dump:
             # this is needed because we want bilby to use the updated DINGO
             # prior
-            self.waveform_arguments_dict = self.injection_waveform_arguments
-            self.prior_dict = self.priors
-            self.likelihood_type = "GravitationalWaveTransient"
-            self.calibration_marginalization = False
-            self.phase_marginalization = False
-            self.time_marginalization = False
-            self.distance_marginalization = False
-            self.number_of_response_curves = 0
-            self._distance_marginalization_lookup_table = None
-            self.reference_frame = "sky"
-            self.fiducial_parameters = None
-            self.update_fiducial_parameters = None
-            self.epsilon = None
-            self.jitter_time = True
-            self.save_data_dump()
+            self.prepare_and_save_data_dump()
 
         # PSD and strain data.
         data = {"waveform": {}, "asds": {}}  # TODO: Rename these keys.
