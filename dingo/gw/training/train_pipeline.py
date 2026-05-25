@@ -363,7 +363,7 @@ def train_stages(
                     "Early stopping settings invalid. Please pass 'patience', 'delta', 'metric'"
                 )
                 raise
-
+        
         runtime_limits.max_epochs_total = end_epochs[n]
         pm.train(
             train_loader,
@@ -373,6 +373,7 @@ def train_stages(
             checkpoint_epochs=local_settings["checkpoint_epochs"],
             use_wandb=local_settings.get("wandb", False),
             test_only=local_settings.get("test_only", False),
+            n_wfs_to_plot=local_settings.get("n_wfs_to_plot", 0),
             early_stopping=early_stopping,
         )
         # if test_only, model should not be saved, and run is complete
