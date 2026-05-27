@@ -240,32 +240,32 @@ class DataGenerationInput(BilbyDataGenerationInput):
         if self.injection:
             self._inject_dingo_signal(args)
 
-    @BilbyDataGenerationInput.interferometers.setter
-    def interferometers(self, interferometers):
-        # Monkey patch to avoid bilby_pipe zeroing data below
-        # self.minimum_frequency_dict and above self.maximum_frequency_dict. Remove
-        # this code if we are happy to let bilby_pipe do this. Possible issue is edge
-        # effects for multi-banded frequency domain, so instead we do the masking
-        # within Dingo.
-        for ifo in interferometers:
-            if isinstance(ifo, bilby.gw.detector.Interferometer) is False:
-                raise BilbyPipeError(f"ifo={ifo} is not a bilby Interferometer")
-            # if self.minimum_frequency is not None:
-            #     ifo.minimum_frequency = self.minimum_frequency_dict[ifo.name]
-            # if self.maximum_frequency is not None:
-            #     ifo.maximum_frequency = self.maximum_frequency_dict[ifo.name]
-            # if self.calibration_model is not None:
-            #     self.add_calibration_model_to_interferometers(ifo)
+    #@BilbyDataGenerationInput.interferometers.setter
+    #def interferometers(self, interferometers):
+    #    # Monkey patch to avoid bilby_pipe zeroing data below
+    #    # self.minimum_frequency_dict and above self.maximum_frequency_dict. Remove
+    #    # this code if we are happy to let bilby_pipe do this. Possible issue is edge
+    #    # effects for multi-banded frequency domain, so instead we do the masking
+    #    # within Dingo.
+    #    for ifo in interferometers:
+    #        if isinstance(ifo, bilby.gw.detector.Interferometer) is False:
+    #            raise BilbyPipeError(f"ifo={ifo} is not a bilby Interferometer")
+    #        # if self.minimum_frequency is not None:
+    #        #     ifo.minimum_frequency = self.minimum_frequency_dict[ifo.name]
+    #        # if self.maximum_frequency is not None:
+    #        #     ifo.maximum_frequency = self.maximum_frequency_dict[ifo.name]
+    #        # if self.calibration_model is not None:
+    #        #     self.add_calibration_model_to_interferometers(ifo)
 
-        self._interferometers = interferometers
-        self.data_set = True
-        if self.plot_data:
-            interferometers.plot_data(outdir=self.data_directory, label=self.label)
-            plot_whitened_data(
-                interferometers=interferometers,
-                data_directory=self.data_directory,
-                label=self.label,
-            )
+    #    self._interferometers = interferometers
+    #    self.data_set = True
+    #    if self.plot_data:
+    #        interferometers.plot_data(outdir=self.data_directory, label=self.label)
+    #        plot_whitened_data(
+    #            interferometers=interferometers,
+    #            data_directory=self.data_directory,
+    #            label=self.label,
+    #        )
 
     def _inject_dingo_signal(self, args):
         """Generate a GW signal using the dingo.gw.injection class and add it to the
