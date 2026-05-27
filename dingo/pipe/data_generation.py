@@ -338,7 +338,7 @@ class DataGenerationInput(BilbyDataGenerationInput):
             )
             ifo.meta_data["matched_filter_SNR"] = ifo.matched_filter_snr(signal=s)
 
-    def prepare_and_save_data_dump():
+    def prepare_and_save_data_dump(self):
         """DINGO wrapper for bilby_pipe's save_data_dump()."""
         self.waveform_arguments_dict = self.injection_waveform_arguments
         self.prior_dict = self.priors
