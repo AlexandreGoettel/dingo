@@ -116,9 +116,6 @@ class DataGenerationInput(BilbyDataGenerationInput):
         self.reference_frequency = args.reference_frequency
 
         # Waveform, source model and likelihood
-        self.waveform_generator_class = (
-            "bilby.gw.waveform_generator.LALCBCWaveformGenerator"
-        )
         self.waveform_generator_class_ctor_args = None
         self.injection_waveform_generator_class_ctor_args = None
 
@@ -130,22 +127,29 @@ class DataGenerationInput(BilbyDataGenerationInput):
         self.pn_phase_order = -1
         self.pn_amplitude_order = 0
         self.mode_array = None
+        self.numerical_relativity_file = args.numerical_relativity_file
         # don't set self.waveform_arguments_dict, it will be updated later by injection_waveform_arguments
         self.waveform_arguments_dict = None
-        self.injection_waveform_arguments = args.injection_waveform_arguments
-        self.numerical_relativity_file = args.numerical_relativity_file
         self.dingo_injection = args.dingo_injection
+        self.injection_waveform_arguments = args.injection_waveform_arguments
         self.injection_waveform_approximant = args.injection_waveform_approximant
-        if args.injection_waveform_approximant in [
+        if self.injection_waveform_approximant is None:  # Default to waveform_approximant
+            self.injection_waveform_approximant = self.waveform_approximant
+        assert self.injection_waveform_approximant is not None  # Both can't be None
+
+        self.dingo_injection = args.dingo_injection
+        if self.injection_waveform_approximant in [
             "SEOBNRv5PHM",
             "SEOBNRv5EHM",
             "SEOBNRv5HM",
         ]:
             self.injection_frequency_domain_source_model = "gwsignal_binary_black_hole"
             self.frequency_domain_source_model = "gwsignal_binary_black_hole"
+            self.waveform_generator_class = "bilby.gw.waveform_generator.WaveformGenerator"
         else:
             self.injection_frequency_domain_source_model = "lal_binary_black_hole"
             self.frequency_domain_source_model = "lal_binary_black_hole"
+            self.waveform_generator_class = "bilby.gw.waveform_generator.LALCBCWaveformGenerator"
 
         # DINGO mod
         self.save_bilby_data_dump = args.save_bilby_data_dump
@@ -363,7 +367,6 @@ class DataGenerationInput(BilbyDataGenerationInput):
         This method will also save the PSDs as .txt files in the data directory
         for easy reading by pesummary and Bilby.
         """
-
         try:
             model = build_model_from_kwargs(
                 filename=self.model, device="meta", load_training_info=False
