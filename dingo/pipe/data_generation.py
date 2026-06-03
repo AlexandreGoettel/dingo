@@ -18,6 +18,7 @@ from bilby_pipe.utils import (
 )
 import lalsimulation as LS
 import numpy as np
+import h5py
 
 from dingo.core.posterior_models.build_model import build_model_from_kwargs
 from dingo.gw.data.event_dataset import EventDataset
@@ -362,7 +363,7 @@ class DataGenerationInput(BilbyDataGenerationInput):
 
     def save_hdf5(self):
         """
-        Save frequency-domain strain and ASDs as DingoDataset HDF5 format.
+        Save frequency-domain strain and ASDs as DingoDataset HDF5 format and strain as gwpy HDF5.
 
         This method will also save the PSDs as .txt files in the data directory
         for easy reading by pesummary and Bilby.
@@ -384,7 +385,26 @@ class DataGenerationInput(BilbyDataGenerationInput):
             # prior
             self.prepare_and_save_data_dump()
 
-        # PSD and strain data.
+        # Bilby: strain data
+        for ifo in self.interferometers:
+            strain = ifo.strain_data.time_domain_strain
+            start_time = np.float64(ifo.strain_data.start_time)
+            dx = 1. / np.float64(ifo.strain_data.sampling_frequency)
+            channel_name = self.channel_dict[ifo.name]
+            outfile = self.gwpy_data_files[ifo.name]
+
+            with h5py.File(outfile, "w") as f:
+                dset = f.create_dataset(channel_name, data=strain)
+                dset.attrs.update({
+                    "channel": channel_name,
+                    "name": channel_name,
+                    "x0": start_time,
+                    "dx": dx,
+                    "unit": "",
+                    "xunit": "s",
+                })
+
+        # DINGO: PSD and strain data.
         data = {"waveform": {}, "asds": {}}  # TODO: Rename these keys.
         for ifo in self.interferometers:
             strain = ifo.strain_data.frequency_domain_strain
@@ -482,6 +502,14 @@ class DataGenerationInput(BilbyDataGenerationInput):
         return os.path.join(
             self.data_directory, "_".join([self.label, "event_data.hdf5"])
         )
+
+    @property
+    def gwpy_data_files(self):
+        return {
+            ifo.name: os.path.join(self.data_directory,
+                                   "_".join([self.label, ifo.name, "strain.hdf5"]))
+            for ifo in self.interferometers
+        }
 
     @property
     def importance_sampling_updates(self):
