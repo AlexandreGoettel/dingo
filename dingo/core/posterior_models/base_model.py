@@ -531,17 +531,39 @@ class BasePosteriorModel(ABC):
                 num_times = len(time_domain_waveform)
                 time_array = np.linspace(0, duration, num_times, endpoint=False)
                 
+                # Check if H1_glitch_time is in the parameters
+                tc = None
+                param_names = self.metadata["train_settings"]["data"]["inference_parameters"]
+                standardization = self.metadata["train_settings"]["data"].get("standardization")
+
+                # Find glitch_time index
+                for j, name in enumerate(param_names):
+                    if "glitch_time" in name:
+                        tc_standardized = batch_data[0][idx[i], j].cpu().numpy()
+                        mean = standardization["mean"][name]
+                        std = standardization["std"][name]
+                        tc = tc_standardized * std + mean
+
+                        if tc < 0:
+                            tc += duration
+                        break
+
                 ax.plot(time_array, time_domain_waveform.real, alpha=0.7)
                 ax.set_xlabel('Time (s)')
                 ax.set_ylabel('Strain')
-            
+
+                # Add vertical line at H1_glitch_time if available
+                if tc is not None:
+                    ax.axvline(x=tc, color='red', linestyle='--', alpha=0.7, label=f'Glitch time = {tc:.1f}s')
+                    ax.legend()
+
             plt.tight_layout()
-            
+
             # Save figure
             output_path = f"{outdir}/waveforms.png"
             plt.savefig(output_path)
             plt.close()
-            
+
             print(f"Saved waveform plots to {output_path}")
             break  # Only process first batch
 
