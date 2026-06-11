@@ -318,7 +318,7 @@ class BasePosteriorModel(ABC):
         # machine may have moved the model from 'cuda' to 'cpu'.
         ext = os.path.splitext(model_filename)[-1]
         if ext == ".pt":
-            d = torch.load(model_filename, map_location=device)
+            d = torch.load(model_filename, map_location=device, weights_only=False)
         elif ext == ".hdf5":
             d = self._load_model_from_hdf5(model_filename)
         else:

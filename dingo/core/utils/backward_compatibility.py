@@ -64,7 +64,7 @@ def torch_load_with_fallback(
 
     try:
         r = (
-            torch.load(filename, map_location=preferred_map_location),
+            torch.load(filename, map_location=preferred_map_location, weights_only=False),
             torch.device(preferred_map_location),
         )
         _logger.debug(f"loaded model {filename} to {preferred_map_location}")
