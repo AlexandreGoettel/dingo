@@ -63,6 +63,13 @@ def build_model_from_kwargs(
         raise ValueError("No valid posterior model type specified.")
 
     model = models_dict[posterior_model_type.lower()]
+    
+    # Filter out growboost-specific kwargs for models that don't support them
+    if posterior_model_type.lower() != "normalizing_flow":
+        # Remove growboost kwargs that are not supported by other model types
+        filtered_kwargs = {k: v for k, v in kwargs.items() 
+                         if k not in ['grow_network', 'grow_embedding_output_dim']}
+        kwargs = filtered_kwargs
 
     return model(model_filename=filename, metadata=settings, **kwargs)
 

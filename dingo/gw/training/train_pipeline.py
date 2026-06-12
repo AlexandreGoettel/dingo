@@ -9,6 +9,8 @@ import textwrap
 import time
 from copy import deepcopy
 
+import torch
+
 from threadpoolctl import threadpool_limits
 
 from dingo.core.posterior_models.build_model import (
@@ -78,6 +80,147 @@ def copy_files_to_local(
         )
 
     return local_file_path
+
+
+def prepare_training_new_growboost(
+    train_settings: dict, train_dir: str, local_settings: dict, growboost_path: str
+) -> Tuple[BasePosteriorModel, WaveformDataset]:
+    """
+    Prepare training with growboost functionality. This loads a pre-trained network
+    (grow net) and creates a new network that takes as input both the original (x, theta)
+    pairs and the output of the penultimate layer from the grow net.
+
+    Parameters
+    ----------
+    train_settings : dict
+        Settings which ultimately come from train_settings.yaml file.
+    train_dir : str
+        This is only used to save diagnostics from the SVD.
+    local_settings : dict
+        Local settings (e.g., num_workers, device)
+    growboost_path : str
+        Path to the pre-trained grow net checkpoint file.
+
+    Returns
+    -------
+    (BasePosteriorModel, WaveformDataset)
+    """
+    # Check if the model type supports growboost
+    posterior_model_type = train_settings.get("model", {}).get("posterior_model_type", "")
+    if posterior_model_type.lower() != "normalizing_flow":
+        raise ValueError(f"Growboost is only supported for normalizing_flow models, got {posterior_model_type}")
+    
+    # Load the grow net
+    print(f"Loading grow net from {growboost_path}")
+    import torch
+    # Load on CPU first, then move to target device later
+    grow_pm = build_model_from_kwargs(filename=growboost_path, device="cpu")
+    
+    # Extract the embedding network from the grow net
+    # The grow net's network is a FlowWrapper with embedding_net and flow
+    grow_network = grow_pm.network
+    
+    # Check if it's a FlowWrapper
+    if not hasattr(grow_network, 'embedding_net'):
+        raise ValueError("Grow net must be a FlowWrapper with an embedding_net attribute")
+    
+    grow_embedding_net = grow_network.embedding_net
+    
+    # Get the output dimension of the grow embedding network
+    # This will be the dimension of the penultimate layer features
+    grow_embedding_output_dim = grow_pm.model_kwargs["embedding_kwargs"]["output_dim"]
+    print(f"Grow net embedding output dimension: {grow_embedding_output_dim}")
+    
+    # Build the dataset and transforms as usual
+    data_settings = deepcopy(train_settings["data"])
+    # Optionally copy files to local and update path
+    data_settings["waveform_dataset_path"] = copy_files_to_local(
+        file_path=data_settings["waveform_dataset_path"],
+        local_dir=local_settings.get("local_cache_path", None),
+        leave_keys_on_disk=local_settings.get("leave_waveforms_on_disk", True),
+        is_condor=True if "condor" in local_settings else False,
+    )
+    wfd = build_dataset(
+        data_settings=data_settings,
+        leave_waveforms_on_disk=local_settings.get("leave_waveforms_on_disk", True),
+    )
+    initial_weights = {}
+
+    # Build SVD for embedding network if needed
+    if train_settings["model"].get("embedding_kwargs", None):
+        print("\nBuilding SVD for initialization of embedding network.")
+        initial_weights["V_rb_list"] = build_svd_for_embedding_network(
+            wfd,
+            train_settings["data"],
+            train_settings["training"]["stage_0"]["asd_dataset_path"],
+            num_workers=local_settings["num_workers"],
+            batch_size=train_settings["training"]["stage_0"]["batch_size"],
+            out_dir=train_dir,
+            **train_settings["model"]["embedding_kwargs"]["svd"],
+        )
+
+    # Set the transforms for training
+    set_train_transforms(
+        wfd,
+        train_settings["data"],
+        train_settings["training"]["stage_0"]["asd_dataset_path"],
+    )
+
+    # Modify the model settings to account for the additional grow net features
+    # We need to set the context_dim before calling autocomplete_model_kwargs
+    # because autocomplete_model_kwargs will set it to the embedding output dimension
+    # But we want it to be embedding_output_dim + grow_embedding_output_dim
+    
+    # First, call autocomplete_model_kwargs to set other fields
+    autocomplete_model_kwargs(train_settings["model"], wfd[0])
+    
+    # Then, update the context_dim to include the grow net's embedding output
+    original_context_dim = train_settings["model"]["posterior_kwargs"]["context_dim"]
+    new_context_dim = original_context_dim + grow_embedding_output_dim
+    train_settings["model"]["posterior_kwargs"]["context_dim"] = new_context_dim
+    print(f"Updated context_dim from {original_context_dim} to {new_context_dim}")
+
+    full_settings = {
+        "dataset_settings": wfd.settings,
+        "train_settings": train_settings,
+    }
+
+    print("\nInitializing new posterior model with growboost.")
+    print("Complete settings:")
+    print(yaml.dump(full_settings, default_flow_style=False, sort_keys=False))
+
+    # Move the grow network to the same device as the new model
+    device = torch.device(local_settings["device"])
+    grow_network.to(device)
+    print(f"Moved grow net to device: {device}")
+    
+    # Create the model with the updated settings and growboost information
+    pm = build_model_from_kwargs(
+        settings=full_settings,
+        initial_weights=initial_weights,
+        device=local_settings["device"],
+        grow_network=grow_network,
+        grow_embedding_output_dim=grow_embedding_output_dim,
+    )
+    
+    # Store additional information for reference
+    if not hasattr(pm, 'growboost_info'):
+        pm.growboost_info = {}
+    pm.growboost_info['original_context_dim'] = original_context_dim
+
+    if local_settings.get("wandb", False):
+        try:
+            import wandb
+
+            wandb.init(
+                config=full_settings,
+                dir=train_dir,
+                **local_settings["wandb"],
+            )
+        except ImportError:
+            print("WandB is enabled but not installed.")
+
+    return pm, wfd
 
 
 def prepare_training_new(
@@ -422,6 +565,14 @@ def parse_args():
         help="Checkpoint file from which to resume training.",
     )
     parser.add_argument(
+        "--growboost",
+        type=str,
+        default=None,
+        help="Path to a pre-trained network to be used as a 'grow' net. When specified, "
+        "the new network will take as input the same (x, theta) pairs plus the output "
+        "of the penultimate layer (last layer of embedding) from the grow net.",
+    )
+    parser.add_argument(
         "--exit_command",
         type=str,
         default="",
@@ -434,6 +585,10 @@ def parse_args():
         parser.error("Must specify either a checkpoint file or a settings file.")
     if args.checkpoint is not None and args.settings_file is not None:
         parser.error("Cannot specify both a checkpoint file and a settings file.")
+    if args.growboost is not None and args.checkpoint is not None:
+        parser.error("Cannot specify both a growboost file and a checkpoint file.")
+    if args.growboost is not None and args.settings_file is None:
+        parser.error("Must specify a settings file when using growboost.")
 
     return args
 
@@ -466,7 +621,15 @@ def train_local():
                     print("wandb not installed, cannot generate run id.")
             yaml.dump(local_settings, f, default_flow_style=False, sort_keys=False)
 
-        pm, wfd = prepare_training_new(train_settings, args.train_dir, local_settings)
+        if args.growboost is not None:
+            if not os.path.isfile(args.growboost):
+                raise FileNotFoundError(f"Growboost model not found: {args.growboost}")
+            print(f"Using growboost model: {args.growboost}")
+            pm, wfd = prepare_training_new_growboost(
+                train_settings, args.train_dir, local_settings, args.growboost
+            )
+        else:
+            pm, wfd = prepare_training_new(train_settings, args.train_dir, local_settings)
 
     else:
         if not os.path.isfile(args.checkpoint):

@@ -2,6 +2,7 @@ from .base_model import BasePosteriorModel
 
 from dingo.core.nn.nsf import (
     create_nsf_with_rb_projection_embedding_net,
+    create_nsf_with_rb_projection_embedding_net_and_growboost,
     create_nsf_wrapped,
 )
 
@@ -34,7 +35,11 @@ class NormalizingFlowPosteriorModel(BasePosteriorModel):
     flows.
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, grow_network=None, grow_embedding_output_dim=None, **kwargs):
+        self.growboost_info = {}
+        if grow_network is not None:
+            self.growboost_info['grow_network'] = grow_network
+            self.growboost_info['grow_embedding_output_dim'] = grow_embedding_output_dim
         super().__init__(**kwargs)
 
     def initialize_network(self):
@@ -44,8 +49,24 @@ class NormalizingFlowPosteriorModel(BasePosteriorModel):
         if self.initial_weights is not None:
             model_kwargs["initial_weights"] = self.initial_weights
 
+        # Check if growboost is enabled
+        grow_network = None
+        if hasattr(self, 'growboost_info') and self.growboost_info is not None:
+            grow_network = self.growboost_info.get('grow_network')
+
         if self.model_kwargs.get("embedding_kwargs", False):
-            self.network = create_nsf_with_rb_projection_embedding_net(**model_kwargs)
+            if grow_network is not None:
+                # Use growboost version
+                # Get the grow embedding output dimension from the growboost_info
+                grow_embedding_output_dim = self.growboost_info.get('grow_embedding_output_dim')
+                self.network = create_nsf_with_rb_projection_embedding_net_and_growboost(
+                    **model_kwargs, 
+                    grow_network=grow_network,
+                    grow_embedding_output_dim=grow_embedding_output_dim
+                )
+            else:
+                # Use standard version
+                self.network = create_nsf_with_rb_projection_embedding_net(**model_kwargs)
         else:
             self.network = create_nsf_wrapped(**model_kwargs["posterior_kwargs"])
 
