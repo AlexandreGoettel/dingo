@@ -157,6 +157,7 @@ class DataGenerationInput(BilbyDataGenerationInput):
         if self.save_bilby_data_dump:
             self.time_reference = args.time_reference
             self.deltaT = args.deltaT
+        self._domain = None
 
         # self.conversion_function = args.conversion_function
         # self.generation_function = args.generation_function
@@ -361,6 +362,22 @@ class DataGenerationInput(BilbyDataGenerationInput):
         self.jitter_time = True
         self.save_data_dump()
 
+    @property
+    def domain(self):
+        if self._domain is None:
+            try:
+                model = build_model_from_kwargs(
+                    filename=self.model, device="meta", load_training_info=False
+                )
+            except RuntimeError:
+                # 'meta' is not supported by older version of python / torch
+                model = build_model_from_kwargs(
+                    filename=self.model, device="cpu", load_training_info=False
+                )
+            self._domain = build_domain_from_model_metadata(model.metadata, base=True)
+            assert isinstance(self._domain, UniformFrequencyDomain)
+        return self._domain
+
     def save_hdf5(self):
         """
         Save frequency-domain strain and ASDs as DingoDataset HDF5 format and strain as gwpy HDF5.
@@ -368,21 +385,8 @@ class DataGenerationInput(BilbyDataGenerationInput):
         This method will also save the PSDs as .txt files in the data directory
         for easy reading by pesummary and Bilby.
         """
-        try:
-            model = build_model_from_kwargs(
-                filename=self.model, device="meta", load_training_info=False
-            )
-        except RuntimeError:
-            # 'meta' is not supported by older version of python / torch
-            model = build_model_from_kwargs(
-                filename=self.model, device="cpu", load_training_info=False
-            )
-        domain = build_domain_from_model_metadata(model.metadata, base=True)
-        assert isinstance(domain, UniformFrequencyDomain)
-
         if self.save_bilby_data_dump:
-            # this is needed because we want bilby to use the updated DINGO
-            # prior
+            # this is needed because we want bilby to use the updated DINGO prior
             self.prepare_and_save_data_dump()
 
         # Bilby: strain data
@@ -405,6 +409,19 @@ class DataGenerationInput(BilbyDataGenerationInput):
                 })
 
         # DINGO: PSD and strain data.
+        dataset = self.to_event_dataset()
+        dataset.to_file(self.event_data_file)
+
+        # also saving the psd as a .txt file which can be read in
+        # easily by pesummary or bilby
+        for ifo in self.interferometers:
+            np.savetxt(
+                os.path.join(self.data_directory, f"{ifo.name}_psd.txt"),
+                np.vstack([self.domain(), dataset.data["asds"][ifo.name] ** 2]).T,
+            )
+
+    def to_event_dataset(self):
+        """Collect all relevant settings and format data to return as EventDataset."""
         data = {"waveform": {}, "asds": {}}  # TODO: Rename these keys.
         for ifo in self.interferometers:
             strain = ifo.strain_data.frequency_domain_strain
@@ -412,12 +429,12 @@ class DataGenerationInput(BilbyDataGenerationInput):
             # These arrays extend up to self.sampling_frequency / 2. Truncate them to
             # the model maximum frequency, and also set the ASD to 1.0 below model
             # minimum frequency.
-            asd = self._get_asd_from_ifo(ifo, domain, low_value=1.0)
-            strain = domain.update_data(strain)
+            asd = self._get_asd_from_ifo(ifo, self.domain, low_value=1.0)
+            strain = self.domain.update_data(strain)
 
             # Dingo expects data to have trigger time 0, so we apply a cyclic time shift
             # by the post-trigger duration.
-            strain = domain.time_translate_data(strain, self.post_trigger_duration)
+            strain = self.domain.time_translate_data(strain, self.post_trigger_duration)
 
             # Note that the ASD estimated by the Bilby Interferometer differs ever so
             # slightly from the ASDs we computed before using pycbc. In addition,
@@ -487,15 +504,7 @@ class DataGenerationInput(BilbyDataGenerationInput):
                 "settings": settings,
             }
         )
-        dataset.to_file(self.event_data_file)
-
-        # also saving the psd as a .txt file which can be read in
-        # easily by pesummary or bilby
-        for ifo in self.interferometers:
-            np.savetxt(
-                os.path.join(self.data_directory, f"{ifo.name}_psd.txt"),
-                np.vstack([domain(), data["asds"][ifo.name] ** 2]).T,
-            )
+        return dataset
 
     @property
     def event_data_file(self):
