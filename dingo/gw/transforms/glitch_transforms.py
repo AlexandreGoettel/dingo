@@ -47,54 +47,97 @@ def antiglitch_model(
 class AddAntiglitch(object):
     """Adds analytic glitches based on doi.org/10.1103/PhysRevD.108.122004."""
 
+    param_map = {
+        "glitch_amp": "amp",
+        "glitch_phi": "phi",
+        "glitch_f0": "f0",
+        "glitch_gamma": "gamma",
+        "glitch_time": "t0",
+    }
+
     def __init__(self,
                  domain: UniformFrequencyDomain,
                  colour: bool = False,
     ):
         self.domain = domain
         self.colour = colour
-        self.param_map = {
-            "glitch_time": "t0",
-            "glitch_amp": "amp",
-            "glitch_phi": "phi",
-            "glitch_f0": "f0",
-            "glitch_gamma": "gamma",
-        }
 
     def __call__(self, input_sample):
         sample = input_sample.copy()
 
-        # Check if ifo-related glitch variables are in the prior
-        ifos = set(sample["waveform"].keys())
-        for ifo in sample["waveform"].keys():
-            for name in self.param_map:
-                if f"{ifo}_{name}" not in sample["extrinsic_parameters"]\
-                        and f"{ifo}_{name}" not in sample.get("parameters"):
-                    ifos.remove(ifo)
-                    break
+        parameters = sample.get("parameters", {}) | sample.get("extrinsic_parameters", {})
+        for ifo in sample["waveform"]:
+            if not self.ifo_has_glitch_parameters(ifo, parameters):
+                continue
 
-        for ifo in ifos:
-            # Place the glitch time prior to be relative to geocent_time
-            params = {}
-            for source in sample.get("parameters", {}), sample.get("extrinsic_parameters", {}):
-                params.update(source)
-
-            params[f"{ifo}_glitch_time"] += params["geocent_time"]
-
-            glitch = antiglitch_model(
-                self.domain.sample_frequencies,
-                **{
-                    v: np.atleast_1d(params[f"{ifo}_{k}"])
-                    for k, v in self.param_map.items()
-                },
+            self.add_glitch_to_waveform(
+                waveform=sample["waveform"],
+                domain=self.domain,
+                params=parameters,
+                ifo=ifo,
+                colour=self.colour,
+                asds=sample["asds"],
             )
 
-            if self.colour:  # "un-whiten"
-                glitch *= sample["asds"][ifo] * self.domain.noise_std
-
-            if len(sample["waveform"][ifo].shape) == 1:
-                sample["waveform"][ifo] += glitch[0]
-            else:  # batched, ergo len(shape) == 2
-                sample["waveform"][ifo] += glitch
-
         return sample
+
+    @classmethod
+    def ifo_has_glitch_parameters(self, ifo, parameters):
+        """Check for ifo-related glitch variables in the prior."""
+        for name in self.param_map:
+            if f"{ifo}_{name}" not in parameters:
+                return False
+        return True
+
+    @classmethod
+    def add_glitch_to_waveform(
+            self,
+            waveform: dict,
+            domain: UniformFrequencyDomain,
+            params: dict,
+            ifo: str,
+            colour: bool = False,
+            asds: dict = None,
+        ) -> None:
+        """
+        Add analytic glitch to a waveform for a single interferometer.
+
+        Parameters
+        ----------
+        waveform : dict
+            Dictionary of waveforms, modified in place.
+        domain : UniformFrequencyDomain
+        glitch_params : dict
+            Dictionary containing glitch parameters
+        ifo : str
+            Interferometer name.
+        colour : bool
+            If True, "un-whiten" the glitch using ASDs
+        asds : dict
+            Dictionary of ASDs, one per interferometer. Required if colour=True.
+        """
+        # Extract glitch parameters for this IFO
+        glitch_params = {}
+        for k, v in self.param_map.items():
+            glitch_params[v] = params[f"{ifo}_{k}"]
+
+        # Adjust time to be absolute
+        glitch_params["t0"] += params["geocent_time"]
+
+        # Get analytical glitch
+        glitch = antiglitch_model(
+            domain.sample_frequencies,
+            **{k: np.atleast_1d(v) for k, v in glitch_params.items()},
+        )
+
+        # Apply colouring (un-whitening) if needed
+        if colour:
+            if asds is None:
+                raise ValueError("asds must be provided when colour=True")
+            glitch *= asds[ifo] * domain.noise_std
+
+        # Add to waveform
+        if len(waveform[ifo].shape) == 1:
+            waveform[ifo] += glitch[0]
+        else:  # batched
+            waveform[ifo] += glitch

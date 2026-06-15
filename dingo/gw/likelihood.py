@@ -14,6 +14,7 @@ from dingo.gw.transforms import (
     DecimateWaveformsAndASDS,
     create_mask_based_on_frequency_update,
 )
+from dingo.gw.transforms.glitch_transforms import AddAntiglitch
 from dingo.gw.waveform_generator import WaveformGenerator
 from dingo.gw.domains import (
     Domain,
@@ -846,6 +847,58 @@ def get_wfg(wfg_kwargs, data_domain, frequency_range=None):
                 {**data_domain.domain_dict, "f_max": frequency_range["f_end"]}
             )
         return WaveformGenerator(domain=data_domain, **wfg_kwargs)
+
+
+
+class AntiglitchGWLikelihood(StationaryGaussianGWLikelihood):
+    """
+    GW likelihood with a glitch included in the signal model.
+
+    This likelihood extends StationaryGaussianGWLikelihood by including an analytical
+    glitch model in the signal. The glitch parameters (amp, phi, f0, gamma, time) are
+    expected to be in the theta dict with keys of the form {ifo}_glitch_{param}.
+
+    The signal model becomes: h(theta) = GW_signal(theta) + Antiglitch(theta)
+
+    The likelihood computation remains the same as for StationaryGaussianGWLikelihood,
+    but the signal now includes both the GW waveform and the glitch.
+    """
+
+    def signal(self, theta):
+        """
+        Compute the GW signal including glitch for parameters theta.
+
+        First computes the standard GW signal, then adds glitch contributions
+        for any interferometers that have glitch parameters in theta.
+
+        Parameters
+        ----------
+        theta: dict
+            Parameters including both GW and Antiglitch parameters.
+
+        Returns
+        -------
+        dict
+            Same format as GWSignal.signal(), with glitch added to waveform.
+        """
+        # Get base GW signal
+        signal_dict = super().signal(theta)
+
+        ifos = list(signal_dict["waveform"].keys())
+        for ifo in ifos:
+            if not AddAntiglitch.ifo_has_glitch_parameters(ifo, theta):
+                continue
+
+            # Add glitch to waveform using the same domain as the signal
+            AddAntiglitch.add_glitch_to_waveform(
+                waveform=signal_dict["waveform"],
+                domain=self.data_domain,
+                params=theta,
+                ifo=ifo,
+                colour=False,  # Data is already whitened in the likelihood
+            )
+
+        return signal_dict
 
 
 def main():
