@@ -174,11 +174,12 @@ def prepare_training_new_growboost(
     # First, call autocomplete_model_kwargs to set other fields
     autocomplete_model_kwargs(train_settings["model"], wfd[0])
     
-    # Then, update the context_dim to include the grow net's embedding output
+    # Update the context_dim to account for the grow net's embedding output
+    # The flow's context dimension should be main_embedding_output_dim + grow_embedding_output_dim
     original_context_dim = train_settings["model"]["posterior_kwargs"]["context_dim"]
     new_context_dim = original_context_dim + grow_embedding_output_dim
     train_settings["model"]["posterior_kwargs"]["context_dim"] = new_context_dim
-    print(f"Updated context_dim from {original_context_dim} to {new_context_dim}")
+    print(f"Updated context_dim from {original_context_dim} to {new_context_dim} (added grow net output: {grow_embedding_output_dim})")
 
     full_settings = {
         "dataset_settings": wfd.settings,
@@ -569,8 +570,8 @@ def parse_args():
         type=str,
         default=None,
         help="Path to a pre-trained network to be used as a 'grow' net. When specified, "
-        "the new network will take as input the same (x, theta) pairs plus the output "
-        "of the penultimate layer (last layer of embedding) from the grow net.",
+        "the architecture becomes: (x,theta) -> grow_embedding -> grow_features; "
+        "then (strain, grow_features) -> new_embedding -> new_features -> flow -> posterior.",
     )
     parser.add_argument(
         "--exit_command",

@@ -341,97 +341,53 @@ def create_nsf_with_rb_projection_embedding_net(
     return model
 
 
-class GrowBoostFlowWrapper(nn.Module):
+class GrowBoostEmbeddingWithGrowFeatures(nn.Module):
     """
-    A FlowWrapper that incorporates growboost functionality. This network takes
-    the same inputs as a regular FlowWrapper, but also processes them through a
-    pre-trained "grow" network's embedding to extract penultimate layer features.
+    An embedding network that incorporates growboost functionality.
     
-    The final context passed to the flow consists of:
-    [original_embedding_output, grow_net_penultimate_layer_output]
+    The data flow is:
+    strain → grow_embedding → grow_features (penultimate layer)
+    (strain, grow_features) → new_embedding → new_features
     
-    This effectively creates a new network that learns to use the features from
-    the grow net as additional context information.
+    This implements the correct growboost architecture where:
+    - The input to this network is the strain data (from the FlowWrapper)
+    - It computes grow_features from the strain using the grow net's embedding
+    - It then processes (strain, grow_features) through the new embedding network
+    - The new embedding network is created with added_context=True to handle the tuple input
     """
 
-    def __init__(self, flow: flows.base.Flow, embedding_net: nn.Module = None, 
-                 grow_network: nn.Module = None):
+    def __init__(self, new_embedding_net: nn.Module, grow_embedding_net: nn.Module = None):
         """
         Parameters
         ----------
-        flow: flows.base.Flow
-            The main flow model
-        embedding_net: nn.Module
-            The embedding network for the new model
-        grow_network: nn.Module
-            The pre-trained grow net (FlowWrapper) whose penultimate layer output
-            will be used as additional context
+        new_embedding_net: nn.Module
+            The new embedding network that will process (strain, grow_features)
+            This should be created with added_context=True
+        grow_embedding_net: nn.Module
+            The embedding network from the pre-trained grow net
         """
-        super(GrowBoostFlowWrapper, self).__init__()
-        self.embedding_net = embedding_net
-        self.flow = flow
-        self.grow_network = grow_network
-        
-        # Extract the grow embedding network
-        if grow_network is not None and hasattr(grow_network, 'embedding_net'):
-            self.grow_embedding_net = grow_network.embedding_net
-        else:
-            self.grow_embedding_net = None
+        super(GrowBoostEmbeddingWithGrowFeatures, self).__init__()
+        self.new_embedding_net = new_embedding_net
+        self.grow_embedding_net = grow_embedding_net
 
-    def log_prob(self, y, *x):
-        if len(x) > 0:
-            if self.embedding_net is not None and self.grow_embedding_net is not None:
-                # Process through both embedding networks
-                main_context = self.embedding_net(*x)
-                grow_context = self.grow_embedding_net(*x)
-                # Concatenate the context vectors
-                combined_context = torch.cat([main_context, grow_context], dim=1)
-                return self.flow.log_prob(y, combined_context)
-            elif self.embedding_net is not None:
-                # Only main embedding network (shouldn't happen in growboost mode)
-                x = self.embedding_net(*x)
-                return self.flow.log_prob(y, x)
-            else:
-                # No embedding network
-                return self.flow.log_prob(y)
+    def forward(self, *x):
+        if self.grow_embedding_net is not None:
+            # x contains the context inputs: typically (strain,)
+            # Extract strain data (first element)
+            strain_data = x[0]
+            
+            # Compute grow features from strain
+            grow_features = self.grow_embedding_net(strain_data)
+            
+            # Create input for new embedding: (strain, grow_features)
+            # The new embedding expects this format when added_context=True
+            new_input = (strain_data, grow_features)
+            
+            # Process through the new embedding network
+            return self.new_embedding_net(*new_input)
         else:
-            return self.flow.log_prob(y)
-
-    def sample(self, *x, num_samples=1):
-        if len(x) > 0:
-            if self.embedding_net is not None and self.grow_embedding_net is not None:
-                main_context = self.embedding_net(*x)
-                grow_context = self.grow_embedding_net(*x)
-                combined_context = torch.cat([main_context, grow_context], dim=1)
-                return self.flow.sample(num_samples, combined_context)
-            elif self.embedding_net is not None:
-                x = self.embedding_net(*x)
-                return self.flow.sample(num_samples, x)
-            else:
-                return self.flow.sample(num_samples)
-        else:
-            return self.flow.sample(num_samples)
-
-    def sample_and_log_prob(self, *x, num_samples=1):
-        if len(x) > 0:
-            if self.embedding_net is not None and self.grow_embedding_net is not None:
-                main_context = self.embedding_net(*x)
-                grow_context = self.grow_embedding_net(*x)
-                combined_context = torch.cat([main_context, grow_context], dim=1)
-                return self.flow.sample_and_log_prob(num_samples, combined_context)
-            elif self.embedding_net is not None:
-                x = self.embedding_net(*x)
-                return self.flow.sample_and_log_prob(num_samples, x)
-            else:
-                return self.flow.sample_and_log_prob(num_samples)
-        else:
-            return self.flow.sample_and_log_prob(num_samples)
-
-    def forward(self, y, *x):
-        if len(x) > 0:
-            return self.log_prob(y, *x)
-        else:
-            return self.log_prob(y)
+            # Only new embedding network (shouldn't happen in growboost mode)
+            return self.new_embedding_net(*x)
 
 
 def create_nsf_with_rb_projection_embedding_net_and_growboost(
@@ -443,9 +399,9 @@ def create_nsf_with_rb_projection_embedding_net_and_growboost(
 ):
     """Builds a neural spline flow with an embedding network and growboost functionality.
     
-    This is similar to create_nsf_with_rb_projection_embedding_net, but adds support
-    for growboost by incorporating the penultimate layer output from a pre-trained
-    grow network as additional context.
+    This implements the growboost architecture where:
+    (x, theta) → grow_embedding → grow_features (penultimate layer)
+    concat(x, theta, grow_features) → new_embedding → new_features → flow → posterior
 
     Parameters
     ----------
@@ -473,41 +429,51 @@ def create_nsf_with_rb_projection_embedding_net_and_growboost(
         embedding_kwargs["V_rb_list"] = initial_weights["V_rb_list"]
     elif "V_rb_list" not in embedding_kwargs:
         embedding_kwargs["V_rb_list"] = None
-
-    embedding_net = create_enet_with_projection_layer_and_dense_resnet(
-        **embedding_kwargs
-    )
     
-    # Get the output dimension of the grow network's embedding
-    if grow_embedding_output_dim is None and grow_network is not None and hasattr(grow_network, 'embedding_net'):
-        # Try to infer from the grow network
+    # Extract grow embedding network and its output dimension
+    grow_embedding_net = None
+    if grow_network is not None and hasattr(grow_network, 'embedding_net'):
         grow_embedding_net = grow_network.embedding_net
-        if hasattr(grow_embedding_net, 'output_dim'):
-            # Direct attribute
-            grow_embedding_output_dim = grow_embedding_net.output_dim
-        elif hasattr(grow_embedding_net, 'enets') and len(grow_embedding_net.enets) > 0:
-            # ModuleMerger case - get the first non-Identity module's output_dim
-            for enet in grow_embedding_net.enets:
-                if hasattr(enet, 'output_dim'):
-                    grow_embedding_output_dim = enet.output_dim
-                    break
-        elif isinstance(grow_embedding_net, torch.nn.Sequential) and len(grow_embedding_net) > 0:
-            # Sequential case - get the last module's output_dim
-            last_module = grow_embedding_net[-1]
-            if hasattr(last_module, 'output_dim'):
-                grow_embedding_output_dim = last_module.output_dim
+        
+        # Get output dimension if not provided
+        if grow_embedding_output_dim is None:
+            if hasattr(grow_embedding_net, 'output_dim'):
+                grow_embedding_output_dim = grow_embedding_net.output_dim
+            elif hasattr(grow_embedding_net, 'enets') and len(grow_embedding_net.enets) > 0:
+                # ModuleMerger case - get the first non-Identity module's output_dim
+                for enet in grow_embedding_net.enets:
+                    if hasattr(enet, 'output_dim'):
+                        grow_embedding_output_dim = enet.output_dim
+                        break
+            elif isinstance(grow_embedding_net, torch.nn.Sequential) and len(grow_embedding_net) > 0:
+                # Sequential case - get the last DenseResidualNet's output_dim
+                for module in reversed(grow_embedding_net):
+                    if hasattr(module, 'output_dim'):
+                        grow_embedding_output_dim = module.output_dim
+                        break
         
         if grow_embedding_output_dim is None:
             raise ValueError("Cannot determine grow network embedding output dimension")
     
-    # Create the flow with the combined context dimension
-    posterior_kwargs = copy.deepcopy(posterior_kwargs)
-    original_context_dim = posterior_kwargs["context_dim"]
-    if grow_embedding_output_dim is not None:
-        posterior_kwargs["context_dim"] = original_context_dim + grow_embedding_output_dim
+    # Modify embedding kwargs for growboost
+    # The new embedding will receive (theta, strain, grow_features) as input
+    # We need to set added_context=True so it can handle the additional grow_features
+    embedding_kwargs["added_context"] = True
     
+    # Create the new embedding network - this will be a ModuleMerger
+    # that can handle the additional context (grow_features)
+    new_embedding_net = create_enet_with_projection_layer_and_dense_resnet(
+        **embedding_kwargs
+    )
+    
+    # Create the growboost embedding network that handles the data flow:
+    # (theta, strain) -> compute grow_features -> (theta, strain, grow_features) -> new_embedding
+    combined_embedding_net = GrowBoostEmbeddingWithGrowFeatures(new_embedding_net, grow_embedding_net)
+    
+    # Create the flow with the provided context dimension
+    # The context_dim should be set correctly by the training pipeline
     flow = create_nsf_model(**posterior_kwargs)
-    model = GrowBoostFlowWrapper(flow, embedding_net, grow_network)
+    model = FlowWrapper(flow, combined_embedding_net)
     return model
 
 
