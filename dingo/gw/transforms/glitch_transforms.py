@@ -121,7 +121,7 @@ class AddAntiglitch(object):
         for k, v in self.param_map.items():
             glitch_params[v] = params[f"{ifo}_{k}"]
 
-        # Adjust time to be absolute
+        # Make glitch time relative to geocent_time
         glitch_params["t0"] += params["geocent_time"]
 
         # Get analytical glitch

@@ -18,7 +18,7 @@ from dingo.gw.conversion import change_spin_conversion_phase
 from dingo.gw.domains import MultibandedFrequencyDomain
 from dingo.gw.domains import build_domain
 from dingo.gw.gwutils import get_extrinsic_prior_dict
-from dingo.gw.likelihood import StationaryGaussianGWLikelihood
+from dingo.gw.likelihood import StationaryGaussianGWLikelihood, AntiglitchGWLikelihood
 from dingo.gw.prior import build_prior_with_defaults
 from dingo.core.utils.backward_compatibility import check_minimum_version
 
@@ -297,6 +297,7 @@ class Result(CoreResult):
         phase_marginalization_kwargs: Optional[dict] = None,
         calibration_marginalization_kwargs: Optional[dict] = None,
         phase_grid: Optional[np.ndarray] = None,
+        add_glitch: Optional[bool] = False,
     ):
         """
         Build the likelihood function based on model metadata. This is called at the
@@ -312,6 +313,8 @@ class Result(CoreResult):
             kwargs for phase marginalization.
         calibration_marginalization_kwargs: dict
             Calibration marginalization parameters. If None, no calibration marginalization is used.
+        add_glitch: bool
+            If True, use AntiglitchGWLikelihood instead of StationaryGaussianGWLikelihood.
         """
         if time_marginalization_kwargs is not None:
             if self.geocent_time_prior is None:
@@ -365,7 +368,12 @@ class Result(CoreResult):
                 wfg_domain_dict["delta_f"] = delta_f_new
         wfg_domain = build_domain(wfg_domain_dict)
 
-        self.likelihood = StationaryGaussianGWLikelihood(
+        if add_glitch:
+            likelihood = AntiglitchGWLikelihood
+        else:
+            likelihood = StationaryGaussianGWLikelihood
+
+        self.likelihood = likelihood(
             wfg_kwargs=self.base_metadata["dataset_settings"]["waveform_generator"],
             wfg_domain=wfg_domain,
             data_domain=self.domain,
