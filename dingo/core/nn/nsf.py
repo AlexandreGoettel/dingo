@@ -3,6 +3,7 @@ Implementation of the neural spline flow (NSF). Most of this code is adapted
 from the uci.py example from https://github.com/bayesiains/nsf.
 """
 import copy
+from typing import Union, Callable
 
 import torch
 import torch.nn as nn
@@ -14,7 +15,6 @@ from dingo.core.utils import torchutils
 from dingo.core.nn.enets import (
     create_enet_with_projection_layer_and_dense_resnet,
     create_enet_with_grow_projection_and_dense_resnet,
-    EmbeddingWithGrowFeatures,
 )
 
 
