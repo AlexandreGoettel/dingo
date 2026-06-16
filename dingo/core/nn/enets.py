@@ -271,10 +271,52 @@ class ModuleMerger(nn.Module):
         self.enets = nn.ModuleList(module_list)
 
     def forward(self, *x):
+        if isinstance(x, tuple) and len(x) == 1:
+            x = x[0]
         if len(x) != len(self.enets):
             raise ValueError("Invalid number of input tensors provided.")
         x = [module(xi) for module, xi in zip(self.enets, x)]
         return torch.cat(x, axis=1)
+
+
+class EmbeddingWithGrowFeatures(nn.Module):
+    """
+    An embedding network that incorporates growboost functionality.
+
+    The data flow is:
+    strain → grow_embedding → grow_features
+    (strain, grow_features) → new_embedding → new_features
+
+    This implements the correct growboost architecture where:
+    - The input to this network is the strain data (from the FlowWrapper)
+    - It computes grow_features from the strain using the grow net's embedding
+    - It then processes (strain, grow_features) through the new embedding network
+    - The new embedding network is created with added_context=True to handle the tuple input
+    """
+
+    def __init__(self, new_embedding_net: nn.Module, grow_embedding_net: nn.Module):
+        """
+        Parameters
+        ----------
+        new_embedding_net: nn.Module
+            The new embedding network that will process (strain, grow_features)
+        grow_embedding_net: nn.Module
+            The embedding network from the pre-trained grow net
+        """
+        super(EmbeddingWithGrowFeatures, self).__init__()
+        self.new_embedding_net = new_embedding_net
+        self.grow_embedding_net = grow_embedding_net
+
+    def forward(self, *x):
+        strain_data = x[0]
+        grow_features = self.grow_embedding_net(strain_data)
+
+        # Apply module_1 to strain and identity to grow_features, then concatenate
+        # TODO: this is more straightforward?
+        # embedded_strain = self.module_1(strain_data)
+        # combined = torch.cat([embedded_strain, grow_features], dim=1)
+
+        return self.new_embedding_net((strain_data, grow_features))
 
 
 def create_enet_with_projection_layer_and_dense_resnet(
@@ -363,6 +405,47 @@ def create_enet_with_projection_layer_and_dense_resnet(
         return enet
     else:
         return ModuleMerger((enet, nn.Identity()))
+
+
+def create_enet_with_grow_projection_and_dense_resnet(
+    grow_net: nn.Module,
+    input_dims: List[int],
+    output_dim: int,
+    hidden_dims: Tuple,
+    svd: dict,
+    activation: str = "elu",
+    dropout: float = 0.0,
+    batch_norm: bool = True,
+):
+    """
+    Builder function, à la create_enet_with_projection_layer_and_dense_resnet.
+    The projection layer is initialised using grow net's own pre-trained layers.
+    The pre-trained total output (of size N) is used as added context to Module 2.
+
+        input dimension:    (batch_size, num_blocks, num_channels, num_bins)
+                            (batch_size, N)
+        output dimension:   (batch_size, output_dim)
+    """
+    activation_fn = torchutils.get_activation_function_from_string(activation)
+
+    # Initialise the new embedding's linear projection to the pre-trained values
+    module_1 = LinearProjectionRB(input_dims, svd["size"], None)
+    module_1.load_state_dict(grow_net[0].state_dict())
+
+    module_2 = DenseResidualNet(
+        input_dim=module_1.output_dim + grow_net[-1].output_dim,
+        output_dim=output_dim,
+        hidden_dims=hidden_dims,
+        activation=activation_fn,
+        dropout=dropout,
+        batch_norm=batch_norm,
+    )
+
+    new_embedding = nn.Sequential(
+        ModuleMerger((module_1, nn.Identity())),
+        module_2
+    )
+    return EmbeddingWithGrowFeatures(new_embedding, grow_net)
 
 
 if __name__ == "__main__":

@@ -80,6 +80,89 @@ def copy_files_to_local(
     return local_file_path
 
 
+def prepare_training_new_growboost(
+    train_settings: dict, train_dir: str, local_settings: dict, growboost_path: str
+) -> Tuple[BasePosteriorModel, WaveformDataset]:
+    """
+    Prepare training with growboost functionality. This loads a pre-trained network
+    (grow net) and creates a new network that takes as input both the original (x, theta)
+    pairs and the output of the penultimate layer from the grow net.
+
+    Parameters
+    ----------
+    train_settings : dict
+        Settings which ultimately come from train_settings.yaml file.
+    train_dir : str
+        This is only used to save diagnostics from the SVD.
+    local_settings : dict
+        Local settings (e.g., num_workers, device)
+    growboost_path : str
+        Path to the pre-trained grow net checkpoint file.
+
+    Returns
+    -------
+    (BasePosteriorModel, WaveformDataset)
+    """
+    posterior_model_type = train_settings.get("model", {}).get("posterior_model_type", "")
+    if posterior_model_type.lower() not in ["normalizing_flow"]:
+        raise ValueError(f"Growboost not supported for {posterior_model_type} models.")
+
+    print(f"Loading grow net from {growboost_path}")
+    grow_pm = build_model_from_kwargs(filename=growboost_path,#device=local_settings["device"])
+                                      device="cpu")  # No need to transfer the grow's flow to GPU
+    train_settings["data"] = data_settings = deepcopy(grow_pm.metadata["train_settings"]["data"])
+
+    # TODO: make sure there are no data settings in train.yml
+
+    # Optionally copy files to local and update path
+    data_settings["waveform_dataset_path"] = copy_files_to_local(
+        file_path=data_settings["waveform_dataset_path"],
+        local_dir=local_settings.get("local_cache_path", None),
+        leave_keys_on_disk=local_settings.get("leave_waveforms_on_disk", True),
+        is_condor=True if "condor" in local_settings else False,
+    )
+    wfd = build_dataset(
+        data_settings=data_settings,
+        leave_waveforms_on_disk=local_settings.get("leave_waveforms_on_disk", True),
+    )  # No transforms yet
+    set_train_transforms(
+        wfd,
+        data_settings,
+        train_settings["training"]["stage_0"]["asd_dataset_path"],
+    )
+
+    # Modify the model settings
+    autocomplete_model_kwargs(train_settings["model"], wfd[0], use_growboost=True)
+
+    # A few model settings must be taken over from the grow net
+    # to ensure compatibility
+    train_settings["model"]["embedding_kwargs"]["svd"] =\
+        grow_pm.metadata["train_settings"]["model"]["embedding_kwargs"]["svd"]
+
+    # Build new posterior model to train
+    # Input dimension is strain_dim + grow_output_dim
+    print("\nInitializing new posterior model.")
+    print("Complete settings:")
+    full_settings = {
+        "dataset_settings": wfd.settings,
+        "train_settings": train_settings,
+    }
+    print(yaml.dump(full_settings, default_flow_style=False, sort_keys=False))
+
+    grow_embedding_net = grow_pm.network.embedding_net
+    device = local_settings["device"]
+    print(f"Putting posterior model to device {device}.")
+    grow_embedding_net.to(device)
+
+    pm = build_model_from_kwargs(
+        settings=full_settings,
+        initial_weights=None,
+        device=device,
+        grow_model=grow_embedding_net,
+    )
+    return pm, wfd
+
+
 def prepare_training_new(
     train_settings: dict, train_dir: str, local_settings: dict
 ) -> Tuple[BasePosteriorModel, WaveformDataset]:
@@ -363,7 +446,7 @@ def train_stages(
                     "Early stopping settings invalid. Please pass 'patience', 'delta', 'metric'"
                 )
                 raise
-        
+
         runtime_limits.max_epochs_total = end_epochs[n]
         pm.train(
             train_loader,
@@ -400,9 +483,9 @@ def parse_args():
         description=textwrap.dedent(
             """\
         Train a neural network for gravitational-wave single-event inference.
-        
+
         This program can be called in one of two ways:
-            a) with a settings file. This will create a new network based on the 
+            a) with a settings file. This will create a new network based on the
             contents of the settings file.
             b) with a checkpoint file. This will resume training from the checkpoint.
         """
@@ -422,6 +505,14 @@ def parse_args():
         help="Checkpoint file from which to resume training.",
     )
     parser.add_argument(
+        "--growboost",
+        type=str,
+        default=None,
+        help="Path to a pre-trained network to be used as a 'grow' net. When specified, "
+        "the architecture becomes: (x,theta) -> grow_embedding -> grow_features; "
+        "then (strain, grow_features) -> new_embedding -> new_features -> flow -> posterior.",
+    )
+    parser.add_argument(
         "--exit_command",
         type=str,
         default="",
@@ -434,6 +525,10 @@ def parse_args():
         parser.error("Must specify either a checkpoint file or a settings file.")
     if args.checkpoint is not None and args.settings_file is not None:
         parser.error("Cannot specify both a checkpoint file and a settings file.")
+    if args.growboost is not None and args.checkpoint is not None:
+        parser.error("Cannot specify both a growboost file and a checkpoint file.")  # yet
+    if args.growboost is not None and args.settings_file is None:
+        parser.error("Must specify a settings file when using growboost.")
 
     return args
 
@@ -466,7 +561,14 @@ def train_local():
                     print("wandb not installed, cannot generate run id.")
             yaml.dump(local_settings, f, default_flow_style=False, sort_keys=False)
 
-        pm, wfd = prepare_training_new(train_settings, args.train_dir, local_settings)
+        if args.growboost is not None:
+            if not os.path.isfile(args.growboost):
+                raise FileNotFoundError(f"Growboost model not found: {args.growboost}")
+            pm, wfd = prepare_training_new_growboost(
+                train_settings, args.train_dir, local_settings, args.growboost
+            )
+        else:
+            pm, wfd = prepare_training_new(train_settings, args.train_dir, local_settings)
 
     else:
         if not os.path.isfile(args.checkpoint):

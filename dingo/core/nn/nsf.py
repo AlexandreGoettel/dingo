@@ -2,7 +2,6 @@
 Implementation of the neural spline flow (NSF). Most of this code is adapted
 from the uci.py example from https://github.com/bayesiains/nsf.
 """
-
 import copy
 
 import torch
@@ -10,9 +9,13 @@ import torch.nn as nn
 import glasflow.nflows as nflows  # nflows not maintained, so use this maintained fork
 from glasflow.nflows import distributions, flows, transforms
 import glasflow.nflows.nn.nets as nflows_nets
+
 from dingo.core.utils import torchutils
-from dingo.core.nn.enets import create_enet_with_projection_layer_and_dense_resnet
-from typing import Union, Callable, Tuple
+from dingo.core.nn.enets import (
+    create_enet_with_projection_layer_and_dense_resnet,
+    create_enet_with_grow_projection_and_dense_resnet,
+    EmbeddingWithGrowFeatures,
+)
 
 
 def create_linear_transform(param_dim: int):
@@ -336,6 +339,45 @@ def create_nsf_with_rb_projection_embedding_net(
     embedding_net = create_enet_with_projection_layer_and_dense_resnet(
         **embedding_kwargs
     )
+    flow = create_nsf_model(**posterior_kwargs)
+    model = FlowWrapper(flow, embedding_net)
+    return model
+
+
+def create_nsf_with_grow_embedding_net(
+    grow_net: nn.Module,
+    posterior_kwargs: dict,
+    embedding_kwargs: dict,
+):
+    """
+    Same as create_nsf_with_rb_projection_embedding_net, but with GrowBoost features.
+
+    Adds the grow_net's output as context for the projection + DenseResNet embedding.
+
+    Parameters
+    ----------
+    grow_net : nn.Module
+        pre-trained network to use for added context for the embedding net
+    posterior_kwargs : dict
+        kwargs for neural spline flow
+    embedding_kwargs : dict
+        kwargs for emebedding network
+    initial_weights : dict
+        Dictionary containing the initial weights for the SVD projection. This should
+        have one key 'V_rb_list', with value a list of SVD V matrices (one for each
+        detector).
+
+    Returns
+    -------
+    nn.Module
+        Neural spline flow model
+    """
+    embedding_kwargs = copy.deepcopy(embedding_kwargs)
+    embedding_net = create_enet_with_grow_projection_and_dense_resnet(
+        grow_net,
+        **embedding_kwargs
+    )
+
     flow = create_nsf_model(**posterior_kwargs)
     model = FlowWrapper(flow, embedding_net)
     return model

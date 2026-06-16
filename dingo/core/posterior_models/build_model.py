@@ -67,7 +67,8 @@ def build_model_from_kwargs(
     return model(model_filename=filename, metadata=settings, **kwargs)
 
 
-def autocomplete_model_kwargs(model_kwargs: dict, data_sample: list):
+def autocomplete_model_kwargs(model_kwargs: dict, data_sample: list,
+                              use_growboost: bool = False):
     """
     Autocomplete the model kwargs from train_settings and data_sample from the dataloader:
 
@@ -84,22 +85,31 @@ def autocomplete_model_kwargs(model_kwargs: dict, data_sample: list):
         Sample from dataloader (e.g., wfd[0]) used for autocomplection.
         Should be of format [parameters, GW data, gnpe_proxies], where the
         last element is only there is GNPE proxies are required.
+    use_growboost: bool
+        If True, set growboost embedding output dim as context
     """
 
     # set input dims from ifo_list and domain information
     model_kwargs["embedding_kwargs"]["input_dims"] = list(data_sample[1].shape)
     # set dimension of parameter space of posterior model
     model_kwargs["posterior_kwargs"]["input_dim"] = len(data_sample[0])
-    # set added_context flag of embedding net if GNPE proxies are required
-    # set context dim of nsf to output dim of embedding net + GNPE proxy dim
-    try:
-        gnpe_proxy_dim = len(data_sample[2])
-        model_kwargs["embedding_kwargs"]["added_context"] = True
-        model_kwargs["posterior_kwargs"]["context_dim"] = (
-            model_kwargs["embedding_kwargs"]["output_dim"] + gnpe_proxy_dim
-        )
-    except IndexError:
-        model_kwargs["embedding_kwargs"]["added_context"] = False
+
+    if use_growboost is not None:
         model_kwargs["posterior_kwargs"]["context_dim"] = model_kwargs[
             "embedding_kwargs"
         ]["output_dim"]
+        model_kwargs["embedding_kwargs"].pop("added_context", None)
+    else:
+        # set added_context flag of embedding net if GNPE proxies are required
+        # set context dim of nsf to output dim of embedding net + GNPE proxy dim
+        try:
+            gnpe_proxy_dim = len(data_sample[2])
+            model_kwargs["embedding_kwargs"]["added_context"] = True
+            model_kwargs["posterior_kwargs"]["context_dim"] = (
+                model_kwargs["embedding_kwargs"]["output_dim"] + gnpe_proxy_dim
+            )
+        except IndexError:
+            model_kwargs["embedding_kwargs"]["added_context"] = False
+            model_kwargs["posterior_kwargs"]["context_dim"] = model_kwargs[
+                "embedding_kwargs"
+            ]["output_dim"]

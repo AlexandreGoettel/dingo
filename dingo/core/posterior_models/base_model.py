@@ -189,6 +189,7 @@ class BasePosteriorModel(ABC):
         """
         Put model to device, and set self.device accordingly.
         """
+        device = str(device)
         if device != "cpu" and not device.startswith("cuda"):
             raise ValueError(f"Device should be either cpu or cuda, got {device}.")
         self.device = torch.device(device)

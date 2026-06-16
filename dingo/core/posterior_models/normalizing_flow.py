@@ -1,6 +1,7 @@
 from .base_model import BasePosteriorModel
 
 from dingo.core.nn.nsf import (
+    create_nsf_with_grow_embedding_net,
     create_nsf_with_rb_projection_embedding_net,
     create_nsf_wrapped,
 )
@@ -34,7 +35,11 @@ class NormalizingFlowPosteriorModel(BasePosteriorModel):
     flows.
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, grow_model=None, **kwargs):
+        self.grow_model = None
+        self.grow_model_kwargs = {}
+        if grow_model is not None:
+            self.grow_model = grow_model
         super().__init__(**kwargs)
 
     def initialize_network(self):
@@ -44,8 +49,15 @@ class NormalizingFlowPosteriorModel(BasePosteriorModel):
         if self.initial_weights is not None:
             model_kwargs["initial_weights"] = self.initial_weights
 
-        if self.model_kwargs.get("embedding_kwargs", False):
-            self.network = create_nsf_with_rb_projection_embedding_net(**model_kwargs)
+        if model_kwargs.get("embedding_kwargs", False):
+            if self.grow_model is not None:
+                model_kwargs.update(self.grow_model_kwargs)
+                self.network = create_nsf_with_grow_embedding_net(
+                    self.grow_model,
+                    **model_kwargs
+                )
+            else:
+                self.network = create_nsf_with_rb_projection_embedding_net(**model_kwargs)
         else:
             self.network = create_nsf_wrapped(**model_kwargs["posterior_kwargs"])
 
