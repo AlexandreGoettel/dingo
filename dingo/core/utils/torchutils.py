@@ -239,7 +239,8 @@ def build_train_and_test_loaders(
 
 
 def set_requires_grad_flag(
-    model, name_startswith=None, name_contains=None, requires_grad=True
+    model, name_startswith=None, name_contains=None, requires_grad=True,
+    name_does_not_contain=None
 ):
     """
     Set param.requires_grad of all model parameters with a name starting with
@@ -247,10 +248,9 @@ def set_requires_grad_flag(
     """
     for name, param in model.named_parameters():
         if (
-            name_startswith is not None
-            and name.startswith(name_startswith)
-            or name_contains is not None
-            and name_contains in name
+            ((name_startswith is not None and name.startswith(name_startswith))
+            or (name_contains is not None and name_contains in name))
+            and (name_does_not_contain is None or name_does_not_contain not in name)
         ):
             param.requires_grad = requires_grad
 

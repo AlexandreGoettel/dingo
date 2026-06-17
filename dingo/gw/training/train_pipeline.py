@@ -154,6 +154,11 @@ def prepare_training_new_growboost(
     print(f"Putting posterior model to device {device}.")
     grow_embedding_net.to(device)
 
+    # Grow embedding never needs gradients
+    grow_embedding_net.eval()
+    for param in grow_embedding_net.parameters():
+        param.requires_grad = False
+
     pm = build_model_from_kwargs(
         settings=full_settings,
         initial_weights=None,
@@ -370,11 +375,13 @@ def initialize_stage(
     if "freeze_rb_layer" in stage:
         if stage["freeze_rb_layer"]:
             set_requires_grad_flag(
-                pm.network, name_contains="layers_rb", requires_grad=False
+                pm.network, name_contains="layers_rb", requires_grad=False,
+                name_does_not_contain="grow",
             )
         else:
             set_requires_grad_flag(
-                pm.network, name_contains="layers_rb", requires_grad=True
+                pm.network, name_contains="layers_rb", requires_grad=True,
+                name_does_not_contain="grow",
             )
     n_grad = get_number_of_model_parameters(pm.network, (True,))
     n_nograd = get_number_of_model_parameters(pm.network, (False,))

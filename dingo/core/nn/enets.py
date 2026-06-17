@@ -307,6 +307,12 @@ class EmbeddingWithGrowFeatures(nn.Module):
         self.new_embedding_net = new_embedding_net
         self.grow_embedding_net = grow_embedding_net
 
+    def train(self, mode=True):
+        """Override train to keep grow_embedding_net in eval mode."""
+        super().train(mode)
+        # Force grow_embedding_net to stay in eval mode
+        self.grow_embedding_net.eval()
+
     def forward(self, *x):
         strain_data = x[0]
         grow_features = self.grow_embedding_net(strain_data)
