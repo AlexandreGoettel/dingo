@@ -51,6 +51,11 @@ class NormalizingFlowPosteriorModel(BasePosteriorModel):
 
         if model_kwargs.get("embedding_kwargs", False):
             if self.grow_model is not None:
+                # Grow embedding never needs gradients
+                self.grow_model.eval()
+                for param in self.grow_model.parameters():
+                    param.requires_grad = False
+
                 model_kwargs.update(self.grow_model_kwargs)
                 self.network = create_nsf_with_grow_embedding_net(
                     self.grow_model,

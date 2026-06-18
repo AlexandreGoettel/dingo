@@ -332,6 +332,7 @@ class BasePosteriorModel(ABC):
         if any(("grow" in k for k in d["model_state_dict"])):
             # Since the grownet embedding is identical to the new embedding
             # use the "normal" embedding to init grow embedding
+            # Note: network was initialised without grow net
             self.grow_model = self.network.embedding_net
             self.initialize_network()
 

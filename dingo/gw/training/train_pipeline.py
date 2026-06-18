@@ -154,11 +154,6 @@ def prepare_training_new_growboost(
     print(f"Putting posterior model to device {device}.")
     grow_embedding_net.to(device)
 
-    # Grow embedding never needs gradients
-    grow_embedding_net.eval()
-    for param in grow_embedding_net.parameters():
-        param.requires_grad = False
-
     pm = build_model_from_kwargs(
         settings=full_settings,
         initial_weights=None,
