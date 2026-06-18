@@ -6,22 +6,21 @@ as well as functions for training and testing across an epoch.
 from abc import abstractmethod, ABC
 import os
 from os.path import join
-import h5py
-
-import torch
-import dingo.core.utils as utils
-from torch.utils.data import Dataset
-import time
-import numpy as np
-from threadpoolctl import threadpool_limits
-import dingo.core.utils.trainutils
 import json
 from collections import OrderedDict
 from typing import Optional
+import time
+from threadpoolctl import threadpool_limits
+import numpy as np
+import h5py
+
+import torch
+
+import dingo.core.utils as utils
+import dingo.core.utils.trainutils
+from dingo.core.utils.trainutils import EarlyStopping
 from dingo.core.utils.backward_compatibility import update_model_config
 from dingo.core.utils.misc import get_version
-
-from dingo.core.utils.trainutils import EarlyStopping
 
 
 class BasePosteriorModel(ABC):
@@ -330,6 +329,11 @@ class BasePosteriorModel(ABC):
         self.model_kwargs = d["model_kwargs"]
         update_model_config(self.model_kwargs)  # For backward compatibility
         self.initialize_network()
+        if any(("grow" in k for k in d["model_state_dict"])):
+            # Since the grownet embedding is identical to the new embedding
+            # use the "normal" embedding to init grow embedding
+            self.grow_model = self.network.embedding_net
+            self.initialize_network()
 
         self.epoch = d["epoch"]
 
@@ -477,7 +481,7 @@ class BasePosteriorModel(ABC):
 
     def plot_waveforms(self, n, outdir, dataloader):
         """Plot n random training waveforms to outdir.
-        
+
         Parameters
         ----------
         n : int
@@ -488,50 +492,50 @@ class BasePosteriorModel(ABC):
             Dataloader containing the training data
         """
         import matplotlib.pyplot as plt
-        
+
         # Build domain from metadata to get frequency information
         from dingo.gw.domains.build_domain import build_domain_from_model_metadata
         domain = build_domain_from_model_metadata(self.metadata, base=True)
-        
+
         for batch_data in dataloader:
             waveforms = batch_data[1].cpu().numpy()
-            
+
             # Get the number of waveforms in this batch
             batch_size = waveforms.shape[0]
             num_to_plot = min(n, batch_size)
-            
+
             # Create figure
             fig, axes = plt.subplots(num_to_plot, 1, figsize=(10, 4 * num_to_plot))
             if num_to_plot == 1:
                 axes = [axes]
-            
+
             # For each waveform to plot
             idx = np.random.randint(0, batch_size, size=num_to_plot)
             for i in range(num_to_plot):
                 ax = axes[i]
-                
+
                 # Get the first detector's data (typically H1 or the first IFO)
                 # Shape: (num_ifos, 3, num_freq_bins)
                 waveform_data = waveforms[idx[i], 0, :, :]  # (3, num_freq_bins)
-                
+
                 # Extract real, imaginary, and scaling factor
                 real_part = waveform_data[0, :]
                 imag_part = waveform_data[1, :]
                 #scaling = waveform_data[2, :]
                 complex_waveform = (real_part + 1j * imag_part)# * scaling
-                
+
                 # Create full frequency array for irfft
                 # The data only includes frequencies >= f_min (masked)
                 # irfft expects the full array with Nyquist frequency
                 num_freqs_full = len(domain.frequency_mask) + 1
                 to_fft = np.zeros(num_freqs_full, dtype=np.complex128)
                 to_fft[1:][domain.frequency_mask] = complex_waveform
-                
+
                 time_domain_waveform = np.fft.irfft(to_fft)
                 duration = domain.duration
                 num_times = len(time_domain_waveform)
                 time_array = np.linspace(0, duration, num_times, endpoint=False)
-                
+
                 # Check if H1_glitch_time is in the parameters
                 tc = None
                 param_names = self.metadata["train_settings"]["data"]["inference_parameters"]

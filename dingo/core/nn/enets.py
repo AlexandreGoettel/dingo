@@ -449,7 +449,7 @@ def create_enet_with_grow_projection_and_dense_resnet(
 
     new_embedding = nn.Sequential(
         ModuleMerger((module_1, nn.Identity())),
-        module_2
+        module_2,
     )
     return EmbeddingWithGrowFeatures(new_embedding, grow_net)
 
