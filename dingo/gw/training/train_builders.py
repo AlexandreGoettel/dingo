@@ -259,7 +259,6 @@ def build_svd_for_embedding_network(
             SelectStandardizeRepackageParameters,
             UnpackDict,
             CropMaskStrainRandom,
-            AddAntiglitch,
         ],
     )
 
