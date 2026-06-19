@@ -136,8 +136,10 @@ class AddAntiglitch(object):
                 raise ValueError("asds must be provided when colour=True")
             glitch *= asds[ifo] * domain.noise_std
 
-        # Add to waveform
+        # Add to waveform, but only above fmin
         if len(waveform[ifo].shape) == 1:
-            waveform[ifo] += glitch[0]
+            glitch[0, :domain.min_idx] = 0
+            waveform[ifo] = glitch[0]
         else:  # batched
-            waveform[ifo] += glitch
+            glitch[:, :domain.min_idx] = 0
+            waveform[ifo] = glitch
