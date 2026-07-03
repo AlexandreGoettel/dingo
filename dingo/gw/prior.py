@@ -16,6 +16,55 @@ import logging
 
 logging.getLogger("bilby").setLevel("ERROR")
 
+from dingo.core.prior import DingoPrior
+
+
+class DingoGWPrior(DingoPrior):
+    """Dingo gravitational wave prior class that wraps BBHPriorDict."""
+
+    def __init__(self, prior_dict: BBHPriorDict):
+        """
+        Initialize DingoGWPrior with a BBHPriorDict.
+
+        Parameters
+        ----------
+        prior_dict : BBHPriorDict
+            The bilby BBHPriorDict to wrap. Its contents are copied into self
+            so that innate dict functions work naturally.
+        """
+        # Copy BBHPriorDict contents into self (which is a dict)
+        super().__init__(prior_dict)
+        # Store reference to the original BBHPriorDict for methods not in dict
+        self._prior_dict = prior_dict
+
+    def sample(self, num_samples: int, **kwargs) -> Dict[str, Any]:
+        """
+        Sample parameters from the prior.
+
+        Parameters
+        ----------
+        num_samples : int
+            Number of samples to draw from the prior.
+        **kwargs : dict
+            Additional keyword arguments passed to the underlying sample method.
+
+        Returns
+        -------
+        Dict[str, Any]
+            Dictionary of sampled parameters, where keys are parameter names
+            and values are numpy arrays of shape (num_samples,).
+        """
+        return self._prior_dict.sample(num_samples, **kwargs)
+
+    # Delegate BBHPriorDict-specific methods that aren't in dict
+    def sample_subset(self, keys, size):
+        """Delegate to BBHPriorDict.sample_subset"""
+        return self._prior_dict.sample_subset(keys, size)
+
+    def ln_prob(self, *args, **kwargs):
+        """Delegate to BBHPriorDict.ln_prob"""
+        return self._prior_dict.ln_prob(*args, **kwargs)
+
 
 class BBHExtrinsicPriorDict(BBHPriorDict):
     """
@@ -145,7 +194,7 @@ default_inference_parameters = [
 
 def build_prior_with_defaults(prior_settings: Dict[str, str]):
     """
-    Generate BBHPriorDict based on dictionary of prior settings,
+    Generate DingoGWPrior based on dictionary of prior settings,
     allowing for default values.
 
     Parameters
@@ -158,7 +207,12 @@ def build_prior_with_defaults(prior_settings: Dict[str, str]):
                "Uniform(minimum=10.0, maximum=80.0, name=None, latex_label=None, unit=None, boundary=None)"
 
     Depending on the particular prior choices the dimensionality of a
-    parameter sample obtained from the returned GWPriorDict will vary.
+    parameter sample obtained from the returned DingoGWPrior will vary.
+
+    Returns
+    -------
+    DingoGWPrior
+        A DingoGWPrior object wrapping a BBHPriorDict.
     """
 
     full_prior_settings = deepcopy(prior_settings)
@@ -166,7 +220,8 @@ def build_prior_with_defaults(prior_settings: Dict[str, str]):
         if v == "default":
             full_prior_settings[k] = default_intrinsic_dict[k]
 
-    return BBHPriorDict(full_prior_settings)
+    bbh_prior_dict = BBHPriorDict(full_prior_settings)
+    return DingoGWPrior(bbh_prior_dict)
 
 
 def split_off_extrinsic_parameters(theta):

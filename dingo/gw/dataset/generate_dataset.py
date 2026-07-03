@@ -9,7 +9,7 @@ from functools import partial
 import numpy as np
 import pandas as pd
 import yaml
-from bilby.gw.prior import BBHPriorDict
+from dingo.gw.prior import DingoGWPrior
 from threadpoolctl import threadpool_limits
 from torchvision.transforms import Compose
 
@@ -28,7 +28,7 @@ from dingo.core.utils.misc import call_func_strict_output_dim
 
 def generate_parameters_and_polarizations(
     waveform_generator: WaveformGenerator,
-    prior: BBHPriorDict,
+    prior: DingoGWPrior,
     num_samples: int,
     num_processes: int,
 ) -> Tuple[pd.DataFrame, Dict[str, np.ndarray]]:
@@ -48,7 +48,7 @@ def generate_parameters_and_polarizations(
     dictionary of numpy arrays corresponding to waveform polarizations
     """
     print("Generating dataset of size " + str(num_samples))
-    parameters = pd.DataFrame(prior.sample(num_samples))
+    parameters = prior.sample_as_df(num_samples)
 
     if num_processes > 1:
         with threadpool_limits(limits=1, user_api="blas"):
