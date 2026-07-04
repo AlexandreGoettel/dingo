@@ -124,17 +124,24 @@ def get_standardization_dict(
     additional_parameters = [p for p in selected_parameters if p not in mean]
     if additional_parameters:
         num_samples = min(100_000, len(wfd.parameters))
-        samples = {p: np.empty(num_samples) for p in additional_parameters}
-        for n in range(num_samples):
-            sample = {"parameters": wfd.parameters.iloc[n].to_dict()}
-            sample = transform(sample)
-            for p in additional_parameters:
-                # This assumes all of the additional parameters are contained within
-                # extrinsic_parameters. We have set it up so this is the case for the
-                # GNPE proxies and the detector coalescence times.
-                samples[p][n] = sample["extrinsic_parameters"][p]
-        mean_additional = {p: np.mean(samples[p]).item() for p in additional_parameters}
-        std_additional = {p: np.std(samples[p]).item() for p in additional_parameters}
+        additional_samples = {p: np.empty(num_samples) for p in additional_parameters}
+        samples = {
+            "parameters": dict(zip(
+                wfd.parameters.columns,
+                wfd.parameters.iloc[:num_samples].to_numpy()
+            ))
+        }
+        samples = transform(samples)
+        for p in additional_parameters:
+            # This assumes all of the additional parameters are contained within
+            # extrinsic_parameters. We have set it up so this is the case for the
+            # GNPE proxies and the detector coalescence times.
+            additional_samples[p] = samples["extrinsic_parameters"][p]
+
+        mean_additional = {p: np.mean(additional_samples[p]).item()
+                           for p in additional_parameters}
+        std_additional = {p: np.std(additional_samples[p]).item()
+                          for p in additional_parameters}
 
         mean.update(mean_additional)
         std.update(std_additional)

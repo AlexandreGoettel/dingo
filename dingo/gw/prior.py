@@ -119,8 +119,6 @@ class DingoGWPrior(DingoPrior):
         for flow in self.flows:
             samples = flow.flow.sample(num_samples=num_samples)
             samples = samples.detach().cpu().numpy()
-            if num_samples == 1:
-                samples = samples[0]
             for param, param_samples in zip(flow.parameters, samples.T):
                 if param not in param_flow_map:
                     param_flow_map[param] = []
