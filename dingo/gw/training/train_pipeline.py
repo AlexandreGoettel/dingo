@@ -28,6 +28,7 @@ from dingo.core.utils import (
 )
 from dingo.core.utils.trainutils import EarlyStopping
 from dingo.gw.dataset import WaveformDataset
+from dingo.gw.prior import BBHExtrinsicPriorDict
 from dingo.core.posterior_models import BasePosteriorModel
 
 
@@ -116,6 +117,11 @@ def prepare_training_new(
         leave_waveforms_on_disk=local_settings.get("leave_waveforms_on_disk", True),
     )  # No transforms yet
     initial_weights = {}
+
+    extrinsic_prior = BBHExtrinsicPriorDict(
+        data_settings["extrinsic_prior"],
+        device=local_settings["device"],  # Pass device in case of an NF prior
+    )
 
     # The embedding network is assumed to have an SVD projection layer. If other types
     # of embedding networks are added in the future, update this code.

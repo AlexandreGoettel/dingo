@@ -73,7 +73,8 @@ def get_mismatch(a, b, domain, asd_file=None):
 
 
 def get_standardization_dict(
-    extrinsic_prior_dict, wfd, selected_parameters, transform=None
+    ext_prior: BBHExtrinsicPriorDict,
+    wfd, selected_parameters, transform=None
 ):
     """
     Calculates the mean and standard deviation of parameters. This is needed for
@@ -81,7 +82,7 @@ def get_standardization_dict(
 
     Parameters
     ----------
-    extrinsic_prior_dict : dict
+    ext_prior : dict
     wfd : WaveformDataset
     selected_parameters : list[str]
         List of parameters for which to estimate standardization factors.
@@ -100,7 +101,6 @@ def get_standardization_dict(
     # Some of the extrinsic prior parameters have analytic means and standard
     # deviations. If possible, this will either get these, or else it will estimate
     # them numerically.
-    ext_prior = BBHExtrinsicPriorDict(extrinsic_prior_dict)
     mean_extrinsic, std_extrinsic = ext_prior.mean_std(ext_prior.keys())
 
     # Check that overlap between intrinsic and extrinsic parameters is only

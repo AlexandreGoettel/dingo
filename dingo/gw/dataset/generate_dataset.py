@@ -38,7 +38,7 @@ def generate_parameters_and_polarizations(
     Parameters
     ----------
     waveform_generator : WaveformGenerator
-    prior : Prior
+    prior : DingoGWPrior
     num_samples : int
     num_processes : int
 
