@@ -164,6 +164,16 @@ class DingoGWPrior(DingoPrior):
     # Delegate BBHPriorDict-specific methods that aren't in dict
     def sample_subset(self, keys, size):
         """Delegate to BBHPriorDict.sample_subset"""
+        # TODO: need to update _prior_dict with setattr?
+        for flow in self.flows:
+            if any(k in flow.parameters for k in keys):
+                # Some subset parameters are from a flow.
+                # "Dirty" solution is to sample from the whole prior,
+                # and then restrict to the subset
+                samples = self.sample(size)
+                return {k: v for k, v in samples.items()
+                        if k in keys}
+
         return self._prior_dict.sample_subset(keys, size)
 
     def ln_prob(self, *args, **kwargs):

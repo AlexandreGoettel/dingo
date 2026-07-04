@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Any
 import copy
 
 import torch.multiprocessing
@@ -67,8 +67,8 @@ def set_train_transforms(
     wfd: WaveformDataset,
     data_settings: dict,
     asd_dataset_path: str,
-    extrinsic_prior: dict,
-    omit_transforms=None
+    extrinsic_prior: Optional[dict] = None,
+    omit_transforms: List[Any] = None
 ):
     """
     Set the transform attribute of a waveform dataset based on a settings dictionary.
@@ -112,6 +112,16 @@ def set_train_transforms(
     ifo_list = InterferometerList(data_settings["detectors"])
 
     # Build transforms.
+    if extrinsic_prior is None:
+        # If transforms have been set before, then
+        # an extrinsic prior is already in wfd
+        for transform in wfd.transform.transforms:
+            if isinstance(transform, SampleExtrinsicParameters):
+                extrinsic_prior = transform.prior
+                break
+        else:
+            raise ValueError("Trying to get extrinsic prior from WaveformDataset, but no "
+                             "SampleExtrinsicParameters found.")
     transforms = [
         SampleExtrinsicParameters(extrinsic_prior),
         GetDetectorTimes(ifo_list, ref_time),

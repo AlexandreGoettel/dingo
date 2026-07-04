@@ -1,7 +1,6 @@
 import numpy as np
 import torch
 import pandas as pd
-from dingo.gw.prior import BBHExtrinsicPriorDict
 from .utils import get_batch_size_of_input_sample
 
 

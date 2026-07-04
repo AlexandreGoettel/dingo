@@ -136,6 +136,7 @@ def prepare_training_new(
             num_workers=local_settings["num_workers"],
             batch_size=train_settings["training"]["stage_0"]["batch_size"],
             out_dir=train_dir,
+            extrinsic_prior=extrinsic_prior,
             **train_settings["model"]["embedding_kwargs"]["svd"],
         )
 
@@ -150,6 +151,7 @@ def prepare_training_new(
         wfd,
         train_settings["data"],
         train_settings["training"]["stage_0"]["asd_dataset_path"],
+        extrinsic_prior,
     )
 
     # This modifies the model settings in-place.
@@ -405,9 +407,9 @@ def parse_args():
         description=textwrap.dedent(
             """\
         Train a neural network for gravitational-wave single-event inference.
-        
+
         This program can be called in one of two ways:
-            a) with a settings file. This will create a new network based on the 
+            a) with a settings file. This will create a new network based on the
             contents of the settings file.
             b) with a checkpoint file. This will resume training from the checkpoint.
         """
