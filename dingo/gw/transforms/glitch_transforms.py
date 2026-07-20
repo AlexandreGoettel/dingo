@@ -139,7 +139,7 @@ class AddAntiglitch(object):
         # Add to waveform, but only above fmin
         if len(waveform[ifo].shape) == 1:
             glitch[0, :domain.min_idx] = 0
-            waveform[ifo] = glitch[0]
+            waveform[ifo] += glitch[0]
         else:  # batched
             glitch[:, :domain.min_idx] = 0
-            waveform[ifo] = glitch
+            waveform[ifo] += glitch
