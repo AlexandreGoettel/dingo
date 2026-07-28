@@ -400,7 +400,6 @@ class BasePosteriorModel(ABC):
         -------
 
         """
-
         if n_wfs_to_plot > 0:
             print(f"Plotting {n_wfs_to_plot} waveforms to {train_dir}")
             self.plot_waveforms(n_wfs_to_plot, train_dir, train_loader)
@@ -493,10 +492,20 @@ class BasePosteriorModel(ABC):
             Dataloader containing the training data
         """
         import matplotlib.pyplot as plt
-
-        # Build domain from metadata to get frequency information
         from dingo.gw.domains.build_domain import build_domain_from_model_metadata
-        domain = build_domain_from_model_metadata(self.metadata, base=True)
+        from dingo.gw.domains import UniformFrequencyDomain
+        
+        # Get domain from dataloader's dataset
+        dataset = dataloader.dataset
+        if hasattr(dataset, 'dataset'):
+            # This is a Subset, get the underlying dataset
+            dataset = dataset.dataset
+        domain = dataset.domain
+        
+        # Skip plotting for MultibandedFrequencyDomain
+        if not isinstance(domain, UniformFrequencyDomain):
+            print("Warning: Can only plot waveforms with UniformFrequencyDomain")
+            return
 
         for batch_data in dataloader:
             waveforms = batch_data[1].cpu().numpy()
@@ -522,8 +531,7 @@ class BasePosteriorModel(ABC):
                 # Extract real, imaginary, and scaling factor
                 real_part = waveform_data[0, :]
                 imag_part = waveform_data[1, :]
-                #scaling = waveform_data[2, :]
-                complex_waveform = (real_part + 1j * imag_part)# * scaling
+                complex_waveform = (real_part + 1j * imag_part)
 
                 # Create full frequency array for irfft
                 # The data only includes frequencies >= f_min (masked)
@@ -572,6 +580,7 @@ class BasePosteriorModel(ABC):
 
             print(f"Saved waveform plots to {output_path}")
             break  # Only process first batch
+
 
 def train_epoch(pm, dataloader):
     pm.network.train()
