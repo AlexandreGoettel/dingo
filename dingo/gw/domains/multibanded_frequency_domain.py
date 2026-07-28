@@ -249,7 +249,7 @@ class MultibandedFrequencyDomain(BaseFrequencyDomain):
             else:
                 raise ValueError(
                     f"f_min = {f_min} is not in expected range "
-                    f"[{self._f_base_lower[-1], self._f_base_lower[-1]}]."
+                    f"[{self._f_base_lower[0], self._f_base_lower[-1]}]."
                 )
 
         if f_max is not None:
@@ -258,8 +258,8 @@ class MultibandedFrequencyDomain(BaseFrequencyDomain):
                 upper_bin = np.where(self._f_base_upper <= f_max)[0][-1]
             else:
                 raise ValueError(
-                    f"f_min = {f_min} is not in expected range "
-                    f"[{self._f_base_lower[-1], self._f_base_lower[-1]}]."
+                    f"f_max = {f_max} is not in expected range "
+                    f"[{self._f_base_upper[0], self._f_base_upper[-1]}]."
                 )
 
         lower_band = self._band_assignment[lower_bin]
