@@ -376,16 +376,15 @@ class Result(CoreResult):
             if "maximum_frequency" in self.event_metadata:
                 domain_dict["f_max"] = max(self.event_metadata["maximum_frequency"].values())
             if "T" in self.event_metadata:
-                domain_dict["delta_f"] = 1. / self.event_metadata["T"]
+                delta_f = 1. / self.event_metadata["T"]
+                if delta_f != getattr(self.domain,
+                                      "base_domain",
+                                      self.domain).domain_dict["delta_f"]:
+                    raise NotImplementedError("Can't update delta_f")
 
             data_domain_dict = self.base_metadata["dataset_settings"]["domain"].copy()
-            if data_domain_dict["type"] == "MultibandedFrequencyDomain":
-                data_domain_dict["base_domain"].update(data_domain_dict)
-                data_domain_dict["delta_f_initial"] = domain_dict["delta_f"]
-            else:
-                data_domain_dict.udpate(data_domain_dict)
-
             data_domain = build_domain(data_domain_dict)
+            data_domain.update(domain_dict)
 
         self.likelihood = StationaryGaussianGWLikelihood(
             wfg_kwargs=self.base_metadata["dataset_settings"]["waveform_generator"],
