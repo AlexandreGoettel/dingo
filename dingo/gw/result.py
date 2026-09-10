@@ -365,10 +365,32 @@ class Result(CoreResult):
                 wfg_domain_dict["delta_f"] = delta_f_new
         wfg_domain = build_domain(wfg_domain_dict)
 
+        data_domain = self.domain
+        if self.event_metadata is not None and any(
+            k in self.event_metadata
+            for k in ["minimum_frequency", "maximum_frequency", "T"]
+        ):
+            domain_dict = {}
+            if "minimum_frequency" in self.event_metadata:
+                domain_dict["f_min"] = min(self.event_metadata["minimum_frequency"].values())
+            if "maximum_frequency" in self.event_metadata:
+                domain_dict["f_max"] = max(self.event_metadata["maximum_frequency"].values())
+            if "T" in self.event_metadata:
+                domain_dict["delta_f"] = 1. / self.event_metadata["T"]
+
+            data_domain_dict = self.base_metadata["dataset_settings"]["domain"].copy()
+            if data_domain_dict["type"] == "MultibandedFrequencyDomain":
+                data_domain_dict["base_domain"].update(data_domain_dict)
+                data_domain_dict["delta_f_initial"] = domain_dict["delta_f"]
+            else:
+                data_domain_dict.udpate(data_domain_dict)
+
+            data_domain = build_domain(data_domain_dict)
+
         self.likelihood = StationaryGaussianGWLikelihood(
             wfg_kwargs=self.base_metadata["dataset_settings"]["waveform_generator"],
             wfg_domain=wfg_domain,
-            data_domain=self.domain,
+            data_domain=data_domain,
             event_data=self.context,
             t_ref=self.t_ref,
             time_marginalization_kwargs=time_marginalization_kwargs,
