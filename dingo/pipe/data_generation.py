@@ -107,8 +107,10 @@ class DataGenerationInput(BilbyDataGenerationInput):
 
         # Frequencies
         self.sampling_frequency = args.sampling_frequency
-        self.minimum_frequency = args.minimum_frequency
-        self.maximum_frequency = args.maximum_frequency
+        for k in "minimum_frequency", "maximum_frequency":
+            v = getattr(args, k)
+            v = str(v) if isinstance(v, dict) else v
+            setattr(self, k, v)
         self.reference_frequency = args.reference_frequency
 
         # Waveform, source model and likelihood
