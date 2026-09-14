@@ -212,6 +212,35 @@ class Result(CoreResult):
             if verbose:
                 print("No domain updates found; domain not rebuilt.")
 
+    def _get_data_domain(self):
+        """
+        Get the data domain, potentially updated with event metadata.
+
+        Returns a Domain object.
+        """
+        data_domain = self.domain
+        if self.event_metadata is not None and any(
+            k in self.event_metadata
+            for k in ["minimum_frequency", "maximum_frequency", "T"]
+        ):
+            domain_dict = {}
+            if "minimum_frequency" in self.event_metadata:
+                domain_dict["f_min"] = min(self.event_metadata["minimum_frequency"].values())
+            if "maximum_frequency" in self.event_metadata:
+                domain_dict["f_max"] = max(self.event_metadata["maximum_frequency"].values())
+            if "T" in self.event_metadata:
+                delta_f = 1. / self.event_metadata["T"]
+                if delta_f != getattr(self.domain,
+                                      "base_domain",
+                                      self.domain).domain_dict["delta_f"]:
+                    raise NotImplementedError("Can't update delta_f")
+
+            data_domain_dict = self.base_metadata["dataset_settings"]["domain"].copy()
+            data_domain = build_domain(data_domain_dict)
+            data_domain.update(domain_dict)
+
+        return data_domain
+
     def _build_prior(self):
         """Build the prior based on model metadata. Called by __init__()."""
         intrinsic_prior = self.base_metadata["dataset_settings"]["intrinsic_prior"]
@@ -365,26 +394,7 @@ class Result(CoreResult):
                 wfg_domain_dict["delta_f"] = delta_f_new
         wfg_domain = build_domain(wfg_domain_dict)
 
-        data_domain = self.domain
-        if self.event_metadata is not None and any(
-            k in self.event_metadata
-            for k in ["minimum_frequency", "maximum_frequency", "T"]
-        ):
-            domain_dict = {}
-            if "minimum_frequency" in self.event_metadata:
-                domain_dict["f_min"] = min(self.event_metadata["minimum_frequency"].values())
-            if "maximum_frequency" in self.event_metadata:
-                domain_dict["f_max"] = max(self.event_metadata["maximum_frequency"].values())
-            if "T" in self.event_metadata:
-                delta_f = 1. / self.event_metadata["T"]
-                if delta_f != getattr(self.domain,
-                                      "base_domain",
-                                      self.domain).domain_dict["delta_f"]:
-                    raise NotImplementedError("Can't update delta_f")
-
-            data_domain_dict = self.base_metadata["dataset_settings"]["domain"].copy()
-            data_domain = build_domain(data_domain_dict)
-            data_domain.update(domain_dict)
+        data_domain = self._get_data_domain()
 
         self.likelihood = StationaryGaussianGWLikelihood(
             wfg_kwargs=self.base_metadata["dataset_settings"]["waveform_generator"],
@@ -449,12 +459,13 @@ class Result(CoreResult):
             raise ValueError(f"{correction_type} not understood")
 
         # Build calibration priors for sampling
+        data_domain = self._get_data_domain()
         calibration_priors = {}
         for ifo in self.interferometers:
             calibration_priors[ifo] = CalibrationPriorDict.from_envelope_file(
                 self.calibration_sampling_kwargs["calibration_envelope"][ifo],
-                self.domain.f_min,
-                self.domain.f_max,
+                data_domain.f_min,
+                data_domain.f_max,
                 self.calibration_sampling_kwargs["num_calibration_nodes"],
                 ifo,
                 correction_type=correction_type_dict[ifo],
