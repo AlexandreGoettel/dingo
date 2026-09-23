@@ -108,6 +108,9 @@ class ImportanceSamplingInput(Input):
         # self.time_marginalization = args.time_marginalization
         # self.jitter_time = args.jitter_time
 
+        # Memory control for importance sampling
+        self.max_n_memory = args.max_n_memory_importance_sampling
+
         self._load_proposal()
         self._load_event()  # Must be called after _load_proposal().
         self.importance_sampling_settings = args.importance_sampling_settings
@@ -254,6 +257,7 @@ class ImportanceSamplingInput(Input):
 
         self.result.importance_sample(
             num_processes=self.request_cpus,
+            max_n_memory=self.max_n_memory,
             time_marginalization_kwargs=self.importance_sampling_settings.get(
                 "time_marginalization"
             ),

@@ -254,7 +254,12 @@ class Result(DingoDataset):
         else:
             return None
 
-    def importance_sample(self, num_processes: int = 1, **likelihood_kwargs):
+    def importance_sample(
+        self,
+        num_processes: int = 1,
+        max_n_memory: int = None,
+        **likelihood_kwargs
+    ):
         """
         Calculate importance weights for samples.
 
@@ -285,6 +290,9 @@ class Result(DingoDataset):
         num_processes : int
             Number of parallel processes to use when calculating likelihoods. (This is
             the most expensive task.)
+        max_n_memory : int, optional
+            Maximum number of samples to hold in memory at once when calculating
+            likelihoods. If None, processes all samples at once.
         likelihood_kwargs : dict
             kwargs that are forwarded to the likelihood constructor. E.g., options for
             marginalization.
@@ -335,7 +343,7 @@ class Result(DingoDataset):
         print(f"Calculating {len(theta)} likelihoods.")
         t0 = time.time()
         log_likelihood = self.likelihood.log_likelihood_multi(
-            theta, num_processes=num_processes
+            theta, num_processes=num_processes, batch_size=max_n_memory
         )
         print(f"Done. This took {time.time() - t0:.2f} seconds.")
 

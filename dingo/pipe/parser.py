@@ -760,6 +760,15 @@ def create_parser(top_level=True, usage=None):
         ),
     )
     submission_parser.add(
+        "--max-n-memory-importance-sampling",
+        type=noneint,
+        default=None,
+        help=(
+            "Maximum number of samples to hold in memory at once during importance "
+            "sampling. If None (default), all samples are processed at once."
+        ),
+    )
+    submission_parser.add(
         "--conda-env",
         type=nonestr,
         default=None,
