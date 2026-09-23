@@ -760,11 +760,11 @@ def create_parser(top_level=True, usage=None):
         ),
     )
     submission_parser.add(
-        "--max-n-memory-importance-sampling",
+        "--batch-size-importance-sampling",
         type=noneint,
         default=None,
         help=(
-            "Maximum number of samples to hold in memory at once during importance "
+            "Maximum number of samples to process at once during importance "
             "sampling. If None (default), all samples are processed at once."
         ),
     )
