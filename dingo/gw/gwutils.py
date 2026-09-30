@@ -73,7 +73,8 @@ def get_mismatch(a, b, domain, asd_file=None):
 
 
 def get_standardization_dict(
-    extrinsic_prior_dict, wfd, selected_parameters, transform=None
+    ext_prior: BBHExtrinsicPriorDict,
+    wfd, selected_parameters, transform=None
 ):
     """
     Calculates the mean and standard deviation of parameters. This is needed for
@@ -81,7 +82,7 @@ def get_standardization_dict(
 
     Parameters
     ----------
-    extrinsic_prior_dict : dict
+    ext_prior : dict
     wfd : WaveformDataset
     selected_parameters : list[str]
         List of parameters for which to estimate standardization factors.
@@ -100,7 +101,6 @@ def get_standardization_dict(
     # Some of the extrinsic prior parameters have analytic means and standard
     # deviations. If possible, this will either get these, or else it will estimate
     # them numerically.
-    ext_prior = BBHExtrinsicPriorDict(extrinsic_prior_dict)
     mean_extrinsic, std_extrinsic = ext_prior.mean_std(ext_prior.keys())
 
     # Check that overlap between intrinsic and extrinsic parameters is only
@@ -124,17 +124,24 @@ def get_standardization_dict(
     additional_parameters = [p for p in selected_parameters if p not in mean]
     if additional_parameters:
         num_samples = min(100_000, len(wfd.parameters))
-        samples = {p: np.empty(num_samples) for p in additional_parameters}
-        for n in range(num_samples):
-            sample = {"parameters": wfd.parameters.iloc[n].to_dict()}
-            sample = transform(sample)
-            for p in additional_parameters:
-                # This assumes all of the additional parameters are contained within
-                # extrinsic_parameters. We have set it up so this is the case for the
-                # GNPE proxies and the detector coalescence times.
-                samples[p][n] = sample["extrinsic_parameters"][p]
-        mean_additional = {p: np.mean(samples[p]).item() for p in additional_parameters}
-        std_additional = {p: np.std(samples[p]).item() for p in additional_parameters}
+        additional_samples = {p: np.empty(num_samples) for p in additional_parameters}
+        samples = {
+            "parameters": dict(zip(
+                wfd.parameters.columns,
+                wfd.parameters.iloc[:num_samples].to_numpy()
+            ))
+        }
+        samples = transform(samples)
+        for p in additional_parameters:
+            # This assumes all of the additional parameters are contained within
+            # extrinsic_parameters. We have set it up so this is the case for the
+            # GNPE proxies and the detector coalescence times.
+            additional_samples[p] = samples["extrinsic_parameters"][p]
+
+        mean_additional = {p: np.mean(additional_samples[p]).item()
+                           for p in additional_parameters}
+        std_additional = {p: np.std(additional_samples[p]).item()
+                          for p in additional_parameters}
 
         mean.update(mean_additional)
         std.update(std_additional)

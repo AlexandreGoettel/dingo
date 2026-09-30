@@ -3,24 +3,24 @@ This module contains the abstract base class for representing posterior models,
 as well as functions for training and testing across an epoch.
 """
 
-from abc import abstractmethod, ABC
-import os
-from os.path import join
-import h5py
-
-import torch
-import dingo.core.utils as utils
-from torch.utils.data import Dataset
-import time
-import numpy as np
-from threadpoolctl import threadpool_limits
-import dingo.core.utils.trainutils
 import json
+import os
+import time
+from abc import ABC, abstractmethod
 from collections import OrderedDict
+from os.path import join
 from typing import Optional
+
+import h5py
+import numpy as np
+import torch
+from threadpoolctl import threadpool_limits
+from torch.utils.data import Dataset
+
+import dingo.core.utils as utils
+import dingo.core.utils.trainutils
 from dingo.core.utils.backward_compatibility import update_model_config
 from dingo.core.utils.misc import get_version
-
 from dingo.core.utils.trainutils import EarlyStopping
 
 
@@ -189,8 +189,10 @@ class BasePosteriorModel(ABC):
         """
         Put model to device, and set self.device accordingly.
         """
-        if device != "cpu" and not device.startswith("cuda"):
-            raise ValueError(f"Device should be either cpu or cuda, got {device}.")
+        if all(not device.startswith(x) for x in ("cpu", "cuda", "xpu")):
+            raise ValueError(
+                f"Device should be either cpu, xpu, or cuda, got {device}."
+            )
         self.device = torch.device(device)
         # Commented below so that code runs on first cuda device in the case of multiple.
         # if device == 'cuda' and torch.cuda.device_count() > 1:
@@ -312,7 +314,6 @@ class BasePosteriorModel(ABC):
             loaded, e.g. optimizer state dict
         device: str
         """
-
         # Make sure that when the model is loaded, the torch tensors are put on the
         # device indicated in the saved metadata. External routines run on a cpu
         # machine may have moved the model from 'cuda' to 'cpu'.
@@ -476,7 +477,7 @@ class BasePosteriorModel(ABC):
 
     def plot_waveforms(self, n, outdir, dataloader):
         """Plot n random training waveforms to outdir.
-        
+
         Parameters
         ----------
         n : int
@@ -487,54 +488,60 @@ class BasePosteriorModel(ABC):
             Dataloader containing the training data
         """
         import matplotlib.pyplot as plt
-        
+
         # Build domain from metadata to get frequency information
-        from dingo.gw.domains.build_domain import build_domain_from_model_metadata
+        from dingo.gw.domains.build_domain import \
+            build_domain_from_model_metadata
+
         domain = build_domain_from_model_metadata(self.metadata, base=True)
-        
+
         for batch_data in dataloader:
             waveforms = batch_data[1].cpu().numpy()
-            
+
             # Get the number of waveforms in this batch
             batch_size = waveforms.shape[0]
             num_to_plot = min(n, batch_size)
-            
+
             # Create figure
             fig, axes = plt.subplots(num_to_plot, 1, figsize=(10, 4 * num_to_plot))
             if num_to_plot == 1:
                 axes = [axes]
-            
+
             # For each waveform to plot
             idx = np.random.randint(0, batch_size, size=num_to_plot)
             for i in range(num_to_plot):
                 ax = axes[i]
-                
+
                 # Get the first detector's data (typically H1 or the first IFO)
                 # Shape: (num_ifos, 3, num_freq_bins)
                 waveform_data = waveforms[idx[i], 0, :, :]  # (3, num_freq_bins)
-                
+
                 # Extract real, imaginary, and scaling factor
                 real_part = waveform_data[0, :]
                 imag_part = waveform_data[1, :]
-                #scaling = waveform_data[2, :]
-                complex_waveform = (real_part + 1j * imag_part)# * scaling
-                
+                # scaling = waveform_data[2, :]
+                complex_waveform = real_part + 1j * imag_part  # * scaling
+
                 # Create full frequency array for irfft
                 # The data only includes frequencies >= f_min (masked)
                 # irfft expects the full array with Nyquist frequency
                 num_freqs_full = len(domain.frequency_mask) + 1
                 to_fft = np.zeros(num_freqs_full, dtype=np.complex128)
                 to_fft[1:][domain.frequency_mask] = complex_waveform
-                
+
                 time_domain_waveform = np.fft.irfft(to_fft)
                 duration = domain.duration
                 num_times = len(time_domain_waveform)
                 time_array = np.linspace(0, duration, num_times, endpoint=False)
-                
+
                 # Check if H1_glitch_time is in the parameters
                 tc = None
-                param_names = self.metadata["train_settings"]["data"]["inference_parameters"]
-                standardization = self.metadata["train_settings"]["data"].get("standardization")
+                param_names = self.metadata["train_settings"]["data"][
+                    "inference_parameters"
+                ]
+                standardization = self.metadata["train_settings"]["data"].get(
+                    "standardization"
+                )
 
                 # Find glitch_time index
                 for j, name in enumerate(param_names):
@@ -549,12 +556,18 @@ class BasePosteriorModel(ABC):
                         break
 
                 ax.plot(time_array, time_domain_waveform.real, alpha=0.7)
-                ax.set_xlabel('Time (s)')
-                ax.set_ylabel('Strain')
+                ax.set_xlabel("Time (s)")
+                ax.set_ylabel("Strain")
 
                 # Add vertical line at H1_glitch_time if available
                 if tc is not None:
-                    ax.axvline(x=tc, color='red', linestyle='--', alpha=0.7, label=f'Glitch time = {tc:.1f}s')
+                    ax.axvline(
+                        x=tc,
+                        color="red",
+                        linestyle="--",
+                        alpha=0.7,
+                        label=f"Glitch time = {tc:.1f}s",
+                    )
                     ax.legend()
 
             plt.tight_layout()
@@ -566,6 +579,7 @@ class BasePosteriorModel(ABC):
 
             print(f"Saved waveform plots to {output_path}")
             break  # Only process first batch
+
 
 def train_epoch(pm, dataloader):
     pm.network.train()

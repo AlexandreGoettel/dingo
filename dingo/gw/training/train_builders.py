@@ -1,33 +1,25 @@
-from typing import List, Optional
 import copy
+from typing import Any, List, Optional
 
 import torch.multiprocessing
 import torchvision
-from threadpoolctl import threadpool_limits
 from bilby.gw.detector import InterferometerList
+from threadpoolctl import threadpool_limits
 
-from dingo.gw.SVD import SVDBasis
-
+from dingo.core.utils import *
 from dingo.gw.dataset.waveform_dataset import WaveformDataset
 from dingo.gw.domains import build_domain
-from dingo.gw.transforms import (
-    ProjectOntoDetectors,
-    SampleNoiseASD,
-    WhitenAndScaleStrain,
-    AddWhiteNoiseComplex,
-    SelectStandardizeRepackageParameters,
-    RepackageStrainsAndASDS,
-    UnpackDict,
-    GNPECoalescenceTimes,
-    SampleExtrinsicParameters,
-    GetDetectorTimes,
-    CropMaskStrainRandom,
-    AddAntiglitch,
-)
+from dingo.gw.gwutils import *
 from dingo.gw.noise.asd_dataset import ASDDataset
 from dingo.gw.prior import default_inference_parameters
-from dingo.gw.gwutils import *
-from dingo.core.utils import *
+from dingo.gw.SVD import SVDBasis
+from dingo.gw.transforms import (AddAntiglitch, AddWhiteNoiseComplex,
+                                 CropMaskStrainRandom, GetDetectorTimes,
+                                 GNPECoalescenceTimes, ProjectOntoDetectors,
+                                 RepackageStrainsAndASDS,
+                                 SampleExtrinsicParameters, SampleNoiseASD,
+                                 SelectStandardizeRepackageParameters,
+                                 UnpackDict, WhitenAndScaleStrain)
 
 
 def build_dataset(
@@ -64,7 +56,13 @@ def build_dataset(
     return wfd
 
 
-def set_train_transforms(wfd, data_settings, asd_dataset_path, omit_transforms=None):
+def set_train_transforms(
+    wfd: WaveformDataset,
+    data_settings: dict,
+    asd_dataset_path: str,
+    extrinsic_prior: Optional[dict] = None,
+    omit_transforms: List[Any] = None,
+):
     """
     Set the transform attribute of a waveform dataset based on a settings dictionary.
     The transform takes waveform polarizations, samples random extrinsic parameters,
@@ -99,7 +97,6 @@ def set_train_transforms(wfd, data_settings, asd_dataset_path, omit_transforms=N
     assert wfd.domain == asd_dataset.domain
     domain = wfd.domain
 
-    extrinsic_prior_dict = get_extrinsic_prior_dict(data_settings["extrinsic_prior"])
     if data_settings["inference_parameters"] == "default":
         data_settings["inference_parameters"] = default_inference_parameters
 
@@ -108,8 +105,20 @@ def set_train_transforms(wfd, data_settings, asd_dataset_path, omit_transforms=N
     ifo_list = InterferometerList(data_settings["detectors"])
 
     # Build transforms.
+    if extrinsic_prior is None:
+        # If transforms have been set before, then
+        # an extrinsic prior is already in wfd
+        for transform in wfd.transform.transforms:
+            if isinstance(transform, SampleExtrinsicParameters):
+                extrinsic_prior = transform.prior
+                break
+        else:
+            raise ValueError(
+                "Trying to get extrinsic prior from WaveformDataset, but no "
+                "SampleExtrinsicParameters found."
+            )
     transforms = [
-        SampleExtrinsicParameters(extrinsic_prior_dict),
+        SampleExtrinsicParameters(extrinsic_prior),
         GetDetectorTimes(ifo_list, ref_time),
     ]
 
@@ -147,7 +156,7 @@ def set_train_transforms(wfd, data_settings, asd_dataset_path, omit_transforms=N
     except KeyError:
         print("Calculating new parameter standardizations.")
         standardization_dict = get_standardization_dict(
-            extrinsic_prior_dict,
+            extrinsic_prior,
             wfd,
             data_settings["inference_parameters"] + data_settings["context_parameters"],
             torchvision.transforms.Compose(transforms),
@@ -202,6 +211,7 @@ def build_svd_for_embedding_network(
     size: int,
     num_training_samples: int,
     num_validation_samples: int,
+    extrinsic_prior: dict,
     num_workers: int = 0,
     batch_size: int = 1000,
     out_dir: Optional[str] = None,
@@ -245,7 +255,7 @@ def build_svd_for_embedding_network(
     torch.multiprocessing.set_sharing_strategy("file_system")
 
     # Fix the luminosity distance to a standard value, just in order to generate the SVD.
-    data_settings["extrinsic_prior"]["luminosity_distance"] = "100.0"
+    extrinsic_prior["luminosity_distance"] = "100.0"
 
     # Build the dataset, but with certain transforms omitted. In particular, we want to
     # build the SVD based on zero-noise waveforms. They should still be whitened though.
@@ -253,6 +263,7 @@ def build_svd_for_embedding_network(
         wfd,
         data_settings,
         asd_dataset_path,
+        extrinsic_prior,
         omit_transforms=[
             AddWhiteNoiseComplex,
             RepackageStrainsAndASDS,
@@ -281,7 +292,7 @@ def build_svd_for_embedding_network(
     loader = DataLoader(
         wfd,
         batch_size=batch_size,
-        num_workers= 0,
+        num_workers=num_workers,
         worker_init_fn=fix_random_seeds,
     )
     with threadpool_limits(limits=1, user_api="blas"):

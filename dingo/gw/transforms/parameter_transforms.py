@@ -1,7 +1,6 @@
 import numpy as np
 import torch
 import pandas as pd
-from dingo.gw.prior import BBHExtrinsicPriorDict
 from .utils import get_batch_size_of_input_sample
 
 
@@ -11,8 +10,7 @@ class SampleExtrinsicParameters(object):
     """
 
     def __init__(self, extrinsic_prior_dict):
-        self.extrinsic_prior_dict = extrinsic_prior_dict
-        self.prior = BBHExtrinsicPriorDict(extrinsic_prior_dict)
+        self.prior = extrinsic_prior_dict
 
     def __call__(self, input_sample):
         sample = input_sample.copy()
@@ -24,10 +22,6 @@ class SampleExtrinsicParameters(object):
         }
         sample["extrinsic_parameters"] = extrinsic_parameters
         return sample
-
-    @property
-    def reproduction_dict(self):
-        return {"extrinsic_prior_dict": self.extrinsic_prior_dict}
 
 
 class SelectStandardizeRepackageParameters(object):

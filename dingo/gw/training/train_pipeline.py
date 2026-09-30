@@ -1,34 +1,27 @@
-from typing import Optional, Tuple
-import os
-
-import numpy as np
-import yaml
 import argparse
+import os
 import shutil
 import textwrap
 import time
 from copy import deepcopy
+from typing import Optional, Tuple
 
+import numpy as np
+import yaml
 from threadpoolctl import threadpool_limits
 
-from dingo.core.posterior_models.build_model import (
-    autocomplete_model_kwargs,
-    build_model_from_kwargs,
-)
-from dingo.gw.training.train_builders import (
-    build_dataset,
-    set_train_transforms,
-    build_svd_for_embedding_network,
-)
-from dingo.core.utils.trainutils import RuntimeLimits
-from dingo.core.utils import (
-    set_requires_grad_flag,
-    get_number_of_model_parameters,
-    build_train_and_test_loaders,
-)
-from dingo.core.utils.trainutils import EarlyStopping
-from dingo.gw.dataset import WaveformDataset
 from dingo.core.posterior_models import BasePosteriorModel
+from dingo.core.posterior_models.build_model import (autocomplete_model_kwargs,
+                                                     build_model_from_kwargs)
+from dingo.core.utils import (build_train_and_test_loaders,
+                              get_number_of_model_parameters,
+                              set_requires_grad_flag)
+from dingo.core.utils.trainutils import EarlyStopping, RuntimeLimits
+from dingo.gw.dataset import WaveformDataset
+from dingo.gw.prior import BBHExtrinsicPriorDict
+from dingo.gw.training.train_builders import (build_dataset,
+                                              build_svd_for_embedding_network,
+                                              set_train_transforms)
 
 
 def copy_files_to_local(
@@ -117,6 +110,11 @@ def prepare_training_new(
     )  # No transforms yet
     initial_weights = {}
 
+    extrinsic_prior = BBHExtrinsicPriorDict(
+        data_settings["extrinsic_prior"],
+        device=local_settings["device"],  # Pass device in case of an NF prior
+    )
+
     # The embedding network is assumed to have an SVD projection layer. If other types
     # of embedding networks are added in the future, update this code.
 
@@ -130,6 +128,7 @@ def prepare_training_new(
             num_workers=local_settings["num_workers"],
             batch_size=train_settings["training"]["stage_0"]["batch_size"],
             out_dir=train_dir,
+            extrinsic_prior=extrinsic_prior,
             **train_settings["model"]["embedding_kwargs"]["svd"],
         )
 
@@ -144,6 +143,7 @@ def prepare_training_new(
         wfd,
         train_settings["data"],
         train_settings["training"]["stage_0"]["asd_dataset_path"],
+        extrinsic_prior,
     )
 
     # This modifies the model settings in-place.
@@ -363,7 +363,7 @@ def train_stages(
                     "Early stopping settings invalid. Please pass 'patience', 'delta', 'metric'"
                 )
                 raise
-        
+
         runtime_limits.max_epochs_total = end_epochs[n]
         pm.train(
             train_loader,
@@ -400,9 +400,9 @@ def parse_args():
         description=textwrap.dedent(
             """\
         Train a neural network for gravitational-wave single-event inference.
-        
+
         This program can be called in one of two ways:
-            a) with a settings file. This will create a new network based on the 
+            a) with a settings file. This will create a new network based on the
             contents of the settings file.
             b) with a checkpoint file. This will resume training from the checkpoint.
         """

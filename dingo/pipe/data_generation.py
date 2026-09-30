@@ -1,31 +1,27 @@
 import os
 import sys
 
-import dingo.pipe.create_injections  # Needed for delta-function time priors.
-
 import bilby
-from bilby_pipe.input import Input
-from bilby_pipe.plotting_utils import plot_whitened_data
-from bilby_pipe.data_generation import DataGenerationInput as BilbyDataGenerationInput
-from bilby.core.prior import PriorDict
-from bilby_pipe.utils import (
-    parse_args,
-    logger,
-    convert_string_to_dict,
-    convert_prior_string_input,
-    resolve_filename_with_transfer_fallback,
-    BilbyPipeError,
-)
+import h5py
 import lalsimulation as LS
 import numpy as np
-import h5py
+from bilby.core.prior import PriorDict
+from bilby_pipe.data_generation import \
+    DataGenerationInput as BilbyDataGenerationInput
+from bilby_pipe.input import Input
+from bilby_pipe.plotting_utils import plot_whitened_data
+from bilby_pipe.utils import (BilbyPipeError, convert_prior_string_input,
+                              convert_string_to_dict, logger, parse_args,
+                              resolve_filename_with_transfer_fallback)
 
+import dingo.pipe.create_injections  # Needed for delta-function time priors.
 from dingo.core.posterior_models.build_model import build_model_from_kwargs
 from dingo.gw.data.event_dataset import EventDataset
-from dingo.gw.domains import UniformFrequencyDomain, build_domain_from_model_metadata
+from dingo.gw.domains import (UniformFrequencyDomain,
+                              build_domain_from_model_metadata)
 from dingo.gw.injection import Injection
-from dingo.pipe.parser import create_parser
 from dingo.gw.transforms import AddAntiglitch
+from dingo.pipe.parser import create_parser
 
 logger.name = "dingo_pipe"
 
@@ -33,7 +29,9 @@ logger.name = "dingo_pipe"
 class DataGenerationInput(BilbyDataGenerationInput):
     def __init__(self, args, unknown_args, create_data=True):
         self.model = resolve_filename_with_transfer_fallback(args.model) or args.model
-        self.model_init = resolve_filename_with_transfer_fallback(args.model_init) or args.model_init
+        self.model_init = args.model_init and (
+            resolve_filename_with_transfer_fallback(args.model_init) or args.model_init
+        )
 
         Input.__init__(self, args, unknown_args)
         # Generic initialisation
@@ -134,7 +132,9 @@ class DataGenerationInput(BilbyDataGenerationInput):
         self.dingo_injection = args.dingo_injection
         self.injection_waveform_arguments = args.injection_waveform_arguments
         self.injection_waveform_approximant = args.injection_waveform_approximant
-        if self.injection_waveform_approximant is None:  # Default to waveform_approximant
+        if (
+            self.injection_waveform_approximant is None
+        ):  # Default to waveform_approximant
             self.injection_waveform_approximant = self.waveform_approximant
         assert self.injection_waveform_approximant is not None  # Both can't be None
 
@@ -146,11 +146,15 @@ class DataGenerationInput(BilbyDataGenerationInput):
         ]:
             self.injection_frequency_domain_source_model = "gwsignal_binary_black_hole"
             self.frequency_domain_source_model = "gwsignal_binary_black_hole"
-            self.waveform_generator_class = "bilby.gw.waveform_generator.WaveformGenerator"
+            self.waveform_generator_class = (
+                "bilby.gw.waveform_generator.WaveformGenerator"
+            )
         else:
             self.injection_frequency_domain_source_model = "lal_binary_black_hole"
             self.frequency_domain_source_model = "lal_binary_black_hole"
-            self.waveform_generator_class = "bilby.gw.waveform_generator.LALCBCWaveformGenerator"
+            self.waveform_generator_class = (
+                "bilby.gw.waveform_generator.LALCBCWaveformGenerator"
+            )
 
         # DINGO mod
         self.save_bilby_data_dump = args.save_bilby_data_dump
@@ -246,8 +250,8 @@ class DataGenerationInput(BilbyDataGenerationInput):
         if self.injection:
             self._inject_dingo_signal(args)
 
-    #@BilbyDataGenerationInput.interferometers.setter
-    #def interferometers(self, interferometers):
+    # @BilbyDataGenerationInput.interferometers.setter
+    # def interferometers(self, interferometers):
     #    # Monkey patch to avoid bilby_pipe zeroing data below
     #    # self.minimum_frequency_dict and above self.maximum_frequency_dict. Remove
     #    # this code if we are happy to let bilby_pipe do this. Possible issue is edge
@@ -325,8 +329,10 @@ class DataGenerationInput(BilbyDataGenerationInput):
         domain = injection.data_domain
         if any(("glitch" in param for param in theta)):
             glitch_transform = AddAntiglitch(domain, colour=True)
-            signal["asds"] = {ifo.name: self._get_asd_from_ifo(ifo, domain)
-                              for ifo in self.interferometers}
+            signal["asds"] = {
+                ifo.name: self._get_asd_from_ifo(ifo, domain)
+                for ifo in self.interferometers
+            }
             signal = glitch_transform(signal)
 
         # Add signal to interferometer data
@@ -393,20 +399,22 @@ class DataGenerationInput(BilbyDataGenerationInput):
         for ifo in self.interferometers:
             strain = ifo.strain_data.time_domain_strain
             start_time = np.float64(ifo.strain_data.start_time)
-            dx = 1. / np.float64(ifo.strain_data.sampling_frequency)
+            dx = 1.0 / np.float64(ifo.strain_data.sampling_frequency)
             channel_name = self.channel_dict[ifo.name]
             outfile = self.gwpy_data_files[ifo.name]
 
             with h5py.File(outfile, "w") as f:
                 dset = f.create_dataset(channel_name, data=strain)
-                dset.attrs.update({
-                    "channel": channel_name,
-                    "name": channel_name,
-                    "x0": start_time,
-                    "dx": dx,
-                    "unit": "",
-                    "xunit": "s",
-                })
+                dset.attrs.update(
+                    {
+                        "channel": channel_name,
+                        "name": channel_name,
+                        "x0": start_time,
+                        "dx": dx,
+                        "unit": "",
+                        "xunit": "s",
+                    }
+                )
 
         # DINGO: PSD and strain data.
         dataset = self.to_event_dataset()
@@ -486,15 +494,19 @@ class DataGenerationInput(BilbyDataGenerationInput):
             # Dingo and Bilby have different geocent_time conventions.
             settings["injection_parameters"]["geocent_time"] -= self.trigger_time
             settings["optimal_SNR"] = {
-                k: v["optimal_SNR"].item()
-                if hasattr(v["optimal_SNR"], "item")
-                else v["optimal_SNR"]
+                k: (
+                    v["optimal_SNR"].item()
+                    if hasattr(v["optimal_SNR"], "item")
+                    else v["optimal_SNR"]
+                )
                 for k, v in self.interferometers.meta_data.items()
             }
             settings["matched_filter_SNR"] = {
-                k: v["matched_filter_SNR"].item()
-                if hasattr(v["matched_filter_SNR"], "item")
-                else v["matched_filter_SNR"]
+                k: (
+                    v["matched_filter_SNR"].item()
+                    if hasattr(v["matched_filter_SNR"], "item")
+                    else v["matched_filter_SNR"]
+                )
                 for k, v in self.interferometers.meta_data.items()
             }
 
@@ -515,8 +527,9 @@ class DataGenerationInput(BilbyDataGenerationInput):
     @property
     def gwpy_data_files(self):
         return {
-            ifo.name: os.path.join(self.data_directory,
-                                   "_".join([self.label, ifo.name, "strain.hdf5"]))
+            ifo.name: os.path.join(
+                self.data_directory, "_".join([self.label, ifo.name, "strain.hdf5"])
+            )
             for ifo in self.interferometers
         }
 
