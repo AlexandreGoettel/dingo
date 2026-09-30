@@ -122,12 +122,13 @@ class DingoGWPrior(DingoPrior):
             for param, param_samples in zip(flow.parameters, samples.T):
                 if param not in param_flow_map:
                     param_flow_map[param] = []
-                    param_flow_map[param].append((
-                        param_samples,
-                        flow.weight,
-                        flow.standardization["mean"][param],
-                        flow.standardization["std"][param],
-                    ))
+
+                param_flow_map[param].append((
+                    param_samples,
+                    flow.weight,
+                    flow.standardization["mean"][param],
+                    flow.standardization["std"][param],
+                ))
 
         # For each parameter with flows, select and de-standardize
         for param, flow_data in param_flow_map.items():
