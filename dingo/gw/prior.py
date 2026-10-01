@@ -1,19 +1,15 @@
-from copy import deepcopy
 import logging
-from typing import Dict, Any
+from copy import deepcopy
+from typing import Any, Dict
 
 import numpy as np
-
+from bilby.core.prior import Cosine, Sine, Uniform
+from bilby.gw.conversion import (convert_to_lal_binary_black_hole_parameters,
+                                 fill_from_fixed_priors)
 from bilby.gw.prior import BBHPriorDict
-from bilby.gw.conversion import (
-    fill_from_fixed_priors,
-    convert_to_lal_binary_black_hole_parameters,
-)
-from bilby.core.prior import Uniform, Sine, Cosine
 
-
-from dingo.core.prior import DingoPrior
 from dingo.core.posterior_models import NormalizingFlowPosteriorModel
+from dingo.core.prior import DingoPrior
 
 # Silence INFO and WARNING messages from bilby
 logging.getLogger("bilby").setLevel("ERROR")
@@ -28,7 +24,9 @@ class NFPrior:
             load_training_info=False,
         )
         self.parameters = self.flow.metadata["train_settings"]["data"]["parameters"]
-        self.standardization = self.flow.metadata["train_settings"]["data"]["standardization"]
+        self.standardization = self.flow.metadata["train_settings"]["data"][
+            "standardization"
+        ]
         self.weight = weight
 
 
@@ -67,7 +65,9 @@ class DingoGWPrior(DingoPrior):
                 continue
 
             # Now expecting NF prior with parameters, model_path, weight
-            self.flows.append(NFPrior(v["model_filename"], v["weight"], device=self.device))
+            self.flows.append(
+                NFPrior(v["model_filename"], v["weight"], device=self.device)
+            )
             for param in v["parameters"]:
                 out_prior_dict[param] = "flow"
 
@@ -214,8 +214,7 @@ class DingoGWPrior(DingoPrior):
                 # "Dirty" solution is to sample from the whole prior,
                 # and then restrict to the subset
                 samples = self.sample(size)
-                return {k: v for k, v in samples.items()
-                        if k in keys}
+                return {k: v for k, v in samples.items() if k in keys}
 
         return self._prior_dict.sample_subset(keys, size)
 
