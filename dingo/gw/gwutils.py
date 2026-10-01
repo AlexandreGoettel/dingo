@@ -108,9 +108,10 @@ def get_standardization_dict(
         if std_intrinsic[k] != 0:
             raise ValueError(
                 f"Expected intrinsic prior for {k} to be a fixed value in the waveform dataset, "
-                f"since {k} is specified as an extrinsic prior in the train settings and will be sampled"
-                f"during training. However, the standard deviation of {k} is non-zero: {std_intrinsic[k]}"
-                f"Please re-generate the waveform dataset with a fixed value for {k}."
+                f"since {k} is specified as an extrinsic prior in the train settings and will be "
+                f"sampled during training. However, the standard deviation of {k} is non-zero: "
+                f"{std_intrinsic[k]}\nPlease re-generate the waveform dataset with a fixed value "
+                f"for {k}."
             )
 
     # Merge dicts, overwriting fiducial values for parameters (e.g.,
