@@ -71,7 +71,33 @@ class DingoGWPrior(DingoPrior):
             for param in v["parameters"]:
                 out_prior_dict[param] = "flow"
 
+        if self.flows:
+            self._validate_flow_parameter_sets()
+
         return out_prior_dict
+
+    def _validate_flow_parameter_sets(self):
+        """
+        Check that the NF priors have either identical or pairwise
+        non-overlapping parameter sets.
+
+        Flows with identical parameter sets are combined into a per-event
+        mixture (see sample); flows with non-overlapping parameter sets are
+        sampled independently. Any other configuration is ambiguous and
+        rejected.
+        """
+        for i, flow_i in enumerate(self.flows):
+            for j in range(i + 1, len(self.flows)):
+                params_i = set(flow_i.parameters)
+                params_j = set(self.flows[j].parameters)
+                if params_i != params_j and params_i & params_j:
+                    raise ValueError(
+                        f"NF priors must have either identical or "
+                        f"non-overlapping parameter sets. Got overlapping, "
+                        f"but not identical, sets {sorted(params_i)} and "
+                        f"{sorted(params_j)} (shared parameters: "
+                        f"{sorted(params_i & params_j)})."
+                    )
 
     @staticmethod
     def _reverse_standardize(samples: np.ndarray, mu: float, sigma: float):
@@ -108,57 +134,73 @@ class DingoGWPrior(DingoPrior):
         Dict[str, Any]
             Dictionary of sampled parameters, where keys are parameter names
             and values are numpy arrays of shape (num_samples,).
+
+        For parameters provided by NF priors, the flows are combined into a
+        per-event mixture. Flows with identical parameter sets form a group:
+        for each event, one flow is selected from the group according to the
+        (normalized) weights, and all parameters of that event are taken from
+        the selected flow's joint draw. This preserves the correlations
+        between parameters that each flow models. Flows with non-overlapping
+        parameter sets are sampled independently.
         """
         base_samples = self._prior_dict.sample(num_samples, **kwargs)
         if not self.flows:
             return base_samples
 
-        param_flow_map = {}
         if num_samples is None:
             num_samples = 1
+
+        # Joint draws from every flow, in standardized units. Each array has
+        # shape (num_samples, len(flow.parameters)).
+        flow_draws = []
         for flow in self.flows:
-            samples = flow.flow.sample(num_samples=num_samples)
-            samples = samples.detach().cpu().numpy()
-            for param, param_samples in zip(flow.parameters, samples.T):
-                if param not in param_flow_map:
-                    param_flow_map[param] = []
+            draws = flow.flow.sample(num_samples=num_samples)
+            flow_draws.append(draws.detach().cpu().numpy())
 
-                param_flow_map[param].append((
-                    param_samples,
-                    flow.weight,
-                    flow.standardization["mean"][param],
-                    flow.standardization["std"][param],
-                ))
+        weights = np.array([flow.weight for flow in self.flows], dtype=float)
 
-        # For each parameter with flows, select and de-standardize
-        for param, flow_data in param_flow_map.items():
-            if len(flow_data) == 1:
-                # Single flow for this parameter
-                samples, _, mu, sigma = flow_data[0]
-                base_samples[param] = self._reverse_standardize(samples, mu, sigma)
-            else:
-                # Multiple flows - choose according to weights
-                weights = np.array([fd[1] for fd in flow_data])
-                weights = weights / weights.sum()
+        # Group the flows by their parameter sets. Within a group, one flow
+        # is selected per event, so that all parameters of an event belonging
+        # to that group come from a single joint draw.
+        groups = {}
+        for flow_idx, flow in enumerate(self.flows):
+            groups.setdefault(frozenset(flow.parameters), []).append(flow_idx)
 
-                all_samples = [fd[0] for fd in flow_data]
-                all_standardizations = [(fd[2], fd[3]) for fd in flow_data]
-
-                # Choose which flow to use for each sample
-                chosen_indices = np.random.choice(
-                    len(flow_data),
-                    size=num_samples,
-                    p=weights,
-                )
-
-                # Build final samples with reverse standardization
-                final_samples = np.zeros(num_samples)
-                for i, flow_idx in enumerate(chosen_indices):
-                    sample_val = all_samples[flow_idx][i]
-                    final_samples[i] = self._reverse_standardize(
-                        sample_val, *all_standardizations[flow_idx]
+        for flow_indices in groups.values():
+            if len(flow_indices) == 1:
+                flow = self.flows[flow_indices[0]]
+                for col, param in enumerate(flow.parameters):
+                    base_samples[param] = self._reverse_standardize(
+                        flow_draws[flow_indices[0]][:, col],
+                        flow.standardization["mean"][param],
+                        flow.standardization["std"][param],
                     )
-                base_samples[param] = final_samples
+                continue
+
+            # Per-event mixture within the group: one choice of flow per
+            # event, shared by all parameters of the group.
+            group_weights = weights[flow_indices]
+            group_weights = group_weights / group_weights.sum()
+            chosen = np.random.choice(
+                len(flow_indices), size=num_samples, p=group_weights
+            )
+
+            final_samples = {
+                param: np.empty(num_samples)
+                for param in self.flows[flow_indices[0]].parameters
+            }
+            for local_idx, flow_idx in enumerate(flow_indices):
+                mask = chosen == local_idx
+                if not mask.any():
+                    continue
+                flow = self.flows[flow_idx]
+                for col, param in enumerate(flow.parameters):
+                    final_samples[param][mask] = self._reverse_standardize(
+                        flow_draws[flow_idx][mask, col],
+                        flow.standardization["mean"][param],
+                        flow.standardization["std"][param],
+                    )
+            base_samples.update(final_samples)
 
         return base_samples
 
