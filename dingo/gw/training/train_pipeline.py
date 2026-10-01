@@ -113,7 +113,10 @@ def prepare_training_new(
 
     extrinsic_prior = BBHExtrinsicPriorDict(
         get_extrinsic_prior_dict(data_settings["extrinsic_prior"]),
-        device=local_settings["device"],  # Pass device in case of an NF prior
+        # NF prior flows are sampled inside DataLoader worker processes,
+        # which are forked from this process. CUDA cannot be re-initialized
+        # in forked subprocesses, so if num_workers != 0, the flows must live on the CPU.
+        device="cpu",
     )
 
     # The embedding network is assumed to have an SVD projection layer. If other types
