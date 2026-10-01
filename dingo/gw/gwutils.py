@@ -1,13 +1,12 @@
-from typing import Optional
-import numpy as np
 from copy import deepcopy
-from scipy.signal.windows import tukey
-from scipy.interpolate import interp1d
+from typing import Optional
 
+import numpy as np
 from bilby.gw.detector import PowerSpectralDensity
+from scipy.interpolate import interp1d
+from scipy.signal.windows import tukey
 
-from dingo.gw.prior import default_extrinsic_dict
-from dingo.gw.prior import BBHExtrinsicPriorDict
+from dingo.gw.prior import BBHExtrinsicPriorDict, default_extrinsic_dict
 
 
 def get_window(window_kwargs):
@@ -33,8 +32,9 @@ def get_extrinsic_prior_dict(extrinsic_prior):
     TODO: Move to dingo.gw.prior.py?"""
     extrinsic_prior_dict = default_extrinsic_dict.copy()
     for k, v in extrinsic_prior.items():
-        if v.lower() != "default":
-            extrinsic_prior_dict[k] = v
+        if isinstance(v, str) and v.lower() == "default":
+            continue
+        extrinsic_prior_dict[k] = v
     return extrinsic_prior_dict
 
 
@@ -73,8 +73,7 @@ def get_mismatch(a, b, domain, asd_file=None):
 
 
 def get_standardization_dict(
-    ext_prior: BBHExtrinsicPriorDict,
-    wfd, selected_parameters, transform=None
+    ext_prior: BBHExtrinsicPriorDict, wfd, selected_parameters, transform=None
 ):
     """
     Calculates the mean and standard deviation of parameters. This is needed for
@@ -126,10 +125,11 @@ def get_standardization_dict(
         num_samples = min(100_000, len(wfd.parameters))
         additional_samples = {p: np.empty(num_samples) for p in additional_parameters}
         samples = {
-            "parameters": dict(zip(
-                wfd.parameters.columns,
-                wfd.parameters.iloc[:num_samples].to_numpy()
-            ))
+            "parameters": dict(
+                zip(
+                    wfd.parameters.columns, wfd.parameters.iloc[:num_samples].to_numpy()
+                )
+            )
         }
         samples = transform(samples)
         for p in additional_parameters:
@@ -138,10 +138,12 @@ def get_standardization_dict(
             # GNPE proxies and the detector coalescence times.
             additional_samples[p] = samples["extrinsic_parameters"][p]
 
-        mean_additional = {p: np.mean(additional_samples[p]).item()
-                           for p in additional_parameters}
-        std_additional = {p: np.std(additional_samples[p]).item()
-                          for p in additional_parameters}
+        mean_additional = {
+            p: np.mean(additional_samples[p]).item() for p in additional_parameters
+        }
+        std_additional = {
+            p: np.std(additional_samples[p]).item() for p in additional_parameters
+        }
 
         mean.update(mean_additional)
         std.update(std_additional)

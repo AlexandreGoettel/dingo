@@ -81,7 +81,7 @@ def set_train_transforms(
         List of sub-transforms to omit from the full composition.
     """
 
-    print(f"Setting train transforms.")
+    print("Setting train transforms.")
     if omit_transforms is not None:
         print("Omitting \n\t" + "\n\t".join([t.__name__ for t in omit_transforms]))
 
@@ -171,7 +171,7 @@ def set_train_transforms(
     if not data_settings.get("zero_noise", False):
         transforms.append(AddWhiteNoiseComplex())
     # Only add the glitch transform if compatible priors are given
-    if any(("glitch" in prior for prior in extrinsic_prior_dict)):
+    if any(("glitch" in prior for prior in extrinsic_prior)):
         transforms.append(AddAntiglitch(domain))
     transforms.append(
         SelectStandardizeRepackageParameters(

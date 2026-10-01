@@ -18,6 +18,7 @@ from dingo.core.utils import (build_train_and_test_loaders,
                               set_requires_grad_flag)
 from dingo.core.utils.trainutils import EarlyStopping, RuntimeLimits
 from dingo.gw.dataset import WaveformDataset
+from dingo.gw.gwutils import get_extrinsic_prior_dict
 from dingo.gw.prior import BBHExtrinsicPriorDict
 from dingo.gw.training.train_builders import (build_dataset,
                                               build_svd_for_embedding_network,
@@ -111,7 +112,7 @@ def prepare_training_new(
     initial_weights = {}
 
     extrinsic_prior = BBHExtrinsicPriorDict(
-        data_settings["extrinsic_prior"],
+        get_extrinsic_prior_dict(data_settings["extrinsic_prior"]),
         device=local_settings["device"],  # Pass device in case of an NF prior
     )
 
