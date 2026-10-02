@@ -9,7 +9,7 @@ def antiglitch_model(
     gamma: np.ndarray,
     f0: np.ndarray,
     phi: np.ndarray,
-    t0: np.ndarray
+    t0: np.ndarray,
 ) -> np.ndarray:
     """
     Return FD log-normal glitch.
@@ -38,7 +38,11 @@ def antiglitch_model(
     h0 = np.zeros((len(f0), len(fk)), dtype=np.complex128)
     fk = fk.reshape(1, -1)
 
-    h0[..., mask] = np.exp(-0.5 * gamma.reshape(-1, 1) * (np.log(fk[..., mask]) - np.log(f0.reshape(-1, 1))) ** 2)
+    h0[..., mask] = np.exp(
+        -0.5
+        * gamma.reshape(-1, 1)
+        * (np.log(fk[..., mask]) - np.log(f0.reshape(-1, 1))) ** 2
+    )
     phase_term = 1j * phi.reshape(-1, 1) - 2j * np.pi * fk * t0.reshape(-1, 1)
     norm = np.sum(np.abs(h0), axis=1, keepdims=True)
     return amp.reshape(-1, 1) * np.exp(phase_term) * h0 / norm
@@ -55,9 +59,10 @@ class AddAntiglitch(object):
         "glitch_time": "t0",
     }
 
-    def __init__(self,
-                 domain: UniformFrequencyDomain,
-                 colour: bool = False,
+    def __init__(
+        self,
+        domain: UniformFrequencyDomain,
+        colour: bool = False,
     ):
         self.domain = domain
         self.colour = colour
@@ -65,7 +70,9 @@ class AddAntiglitch(object):
     def __call__(self, input_sample):
         sample = input_sample.copy()
 
-        parameters = sample.get("parameters", {}) | sample.get("extrinsic_parameters", {})
+        parameters = sample.get("parameters", {}) | sample.get(
+            "extrinsic_parameters", {}
+        )
         for ifo in sample["waveform"]:
             if not self.ifo_has_glitch_parameters(ifo, parameters):
                 continue
@@ -91,14 +98,14 @@ class AddAntiglitch(object):
 
     @classmethod
     def add_glitch_to_waveform(
-            self,
-            waveform: dict,
-            domain: UniformFrequencyDomain,
-            params: dict,
-            ifo: str,
-            colour: bool = False,
-            asds: dict = None,
-        ) -> None:
+        self,
+        waveform: dict,
+        domain: UniformFrequencyDomain,
+        params: dict,
+        ifo: str,
+        colour: bool = False,
+        asds: dict = None,
+    ) -> None:
         """
         Add analytic glitch to a waveform for a single interferometer.
 
@@ -130,6 +137,16 @@ class AddAntiglitch(object):
             **{k: np.atleast_1d(v) for k, v in glitch_params.items()},
         )
 
+        if not np.isfinite(glitch).all():
+            raise ValueError(
+                f"Glitch model produced non-finite values for {ifo} with parameters: "
+                + ", ".join(
+                    f"{k} in [{np.min(v):.3g}, {np.max(v):.3g}]"
+                    for k, v in glitch_params.items()
+                )
+                + "."
+            )
+
         # Apply colouring (un-whitening) if needed
         if colour:
             if asds is None:
@@ -138,8 +155,8 @@ class AddAntiglitch(object):
 
         # Add to waveform, but only above fmin
         if len(waveform[ifo].shape) == 1:
-            glitch[0, :domain.min_idx] = 0
+            glitch[0, : domain.min_idx] = 0
             waveform[ifo] += glitch[0]
         else:  # batched
-            glitch[:, :domain.min_idx] = 0
+            glitch[:, : domain.min_idx] = 0
             waveform[ifo] += glitch
