@@ -17,7 +17,13 @@ logging.getLogger("bilby").setLevel("ERROR")
 
 class NFPrior:
 
-    def __init__(self, model_filename: str, weight: float, device: str = "cuda"):
+    def __init__(
+        self,
+        model_filename: str,
+        weight: float,
+        bounds: Dict[str, Dict] = None,
+        device: str = "cuda",
+    ):
         self.flow = NormalizingFlowPosteriorModel(
             model_filename=model_filename,
             device=device,
@@ -28,16 +34,24 @@ class NFPrior:
             "standardization"
         ]
         self.weight = weight
+        self.model_filename = model_filename
+        self.bounds = bounds
+
+    def min(self, x):
+        """If configured in train.yml, return the minimum allowed value for parameter x."""
+        if self.bounds is None or self.bounds.get(x, {}).get("min") is None:
+            return None
+        return float(self.bounds[x]["min"])
+
+    def max(self, x):
+        """If configured in train.yml, return the maximum allowed value for parameter x."""
+        if self.bounds is None or self.bounds.get(x, {}).get("max") is None:
+            return None
+        return float(self.bounds[x]["max"])
 
 
 class DingoGWPrior(DingoPrior):
     """Dingo gravitational wave prior class that wraps BBHPriorDict."""
-
-    # Allowed minimum values for parameters sampled from NF priors.
-    PARAMETER_MIN = {
-        "glitch_f0": 0.0,
-        "glitch_gamma": 0.0,
-    }
 
     # When sampling from an NF prior, invalid draws are rejected and redrawn
     # (see _sample_flow). If the fraction of valid draws is below this, the
@@ -76,9 +90,15 @@ class DingoGWPrior(DingoPrior):
                 out_prior_dict[k] = v
                 continue
 
-            # Now expecting NF prior with parameters, model_path, weight
+            # Now expecting NF prior with parameters, model_filename, weight,
+            # and optional bounds
             self.flows.append(
-                NFPrior(v["model_filename"], v["weight"], device=self.device)
+                NFPrior(
+                    v["model_filename"],
+                    v["weight"],
+                    bounds=v.get("bounds"),
+                    device=self.device,
+                )
             )
             for param in v["parameters"]:
                 out_prior_dict[param] = "flow"
@@ -133,20 +153,25 @@ class DingoGWPrior(DingoPrior):
     @staticmethod
     def _valid_flow_draws(flow, draws):
         """
-        Marking valid draws: all values finite, and every parameter with an
-        allowed minimum (matched by suffix, see PARAMETER_MIN) strictly above
-        it. The minimum check is performed on destandardized (physical) values.
+        Marking valid draws: all values finite, and (optionally) within the
+        per-parameter bounds configured for the flow (see NFPrior.min/max;
+        both bounds are exclusive).
         """
         mask = np.isfinite(draws).all(axis=1)
         for col, param in enumerate(flow.parameters):
-            for suffix, minimum in DingoGWPrior.PARAMETER_MIN.items():
-                if param.endswith(suffix):
-                    destandardized = DingoGWPrior._reverse_standardize(
-                        draws[:, col],
-                        flow.standardization["mean"][param],
-                        flow.standardization["std"][param],
-                    )
-                    mask &= destandardized > minimum
+            minimum = flow.min(param)
+            maximum = flow.max(param)
+            if minimum is None and maximum is None:
+                continue
+            destandardized = DingoGWPrior._reverse_standardize(
+                draws[:, col],
+                flow.standardization["mean"][param],
+                flow.standardization["std"][param],
+            )
+            if minimum is not None:
+                mask &= destandardized > minimum
+            if maximum is not None:
+                mask &= destandardized < maximum
         return mask
 
     @staticmethod
