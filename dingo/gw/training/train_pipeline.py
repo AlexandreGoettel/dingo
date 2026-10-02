@@ -119,6 +119,11 @@ def prepare_training_new(
         device="cpu",
     )
 
+    if extrinsic_prior.flows:
+        print("NF prior sampling efficiencies:")
+        for params, eff in extrinsic_prior.nf_sampling_efficiency().items():
+            print(f"  {params}: {eff * 100:.2f} %")
+
     # The embedding network is assumed to have an SVD projection layer. If other types
     # of embedding networks are added in the future, update this code.
 

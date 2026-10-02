@@ -33,6 +33,18 @@ class NFPrior:
 class DingoGWPrior(DingoPrior):
     """Dingo gravitational wave prior class that wraps BBHPriorDict."""
 
+    # Allowed minimum values for parameters sampled from NF priors.
+    PARAMETER_MIN = {
+        "glitch_f0": 0.0,
+        "glitch_gamma": 0.0,
+    }
+
+    # When sampling from an NF prior, invalid draws are rejected and redrawn
+    # (see _sample_flow). If the fraction of valid draws is below this, the
+    # flow is considered broken and sampling fails.
+    MIN_SAMPLING_EFFICIENCY = 0.5
+    MIN_DRAWS_FOR_EFFICIENCY_CHECK = 1000
+
     def __init__(self, prior_dict: Dict, device: str = "cuda"):
         """
         Initialize DingoGWPrior with a BBHPriorDict.
@@ -118,6 +130,72 @@ class DingoGWPrior(DingoPrior):
         """
         return samples * sigma + mu
 
+    @staticmethod
+    def _valid_flow_draws(flow, draws):
+        """
+        Marking valid draws: all values finite, and every parameter with an
+        allowed minimum (matched by suffix, see PARAMETER_MIN) strictly above
+        it. The minimum check is performed on destandardized (physical) values.
+        """
+        mask = np.isfinite(draws).all(axis=1)
+        for col, param in enumerate(flow.parameters):
+            for suffix, minimum in DingoGWPrior.PARAMETER_MIN.items():
+                if param.endswith(suffix):
+                    destandardized = DingoGWPrior._reverse_standardize(
+                        draws[:, col],
+                        flow.standardization["mean"][param],
+                        flow.standardization["std"][param],
+                    )
+                    mask &= destandardized > minimum
+        return mask
+
+    @staticmethod
+    def _draw_flow(flow, num_samples):
+        """
+        Draw num_samples samples from a flow, in standardized units, and
+        mark valid draws (see valid_flow_draws).
+        """
+        draws = flow.flow.sample(num_samples=num_samples)
+        draws = draws.detach().cpu().numpy()
+        return draws, DingoGWPrior._valid_flow_draws(flow, draws)
+
+    def _sample_flow(self, flow, num_samples):
+        """
+        Draw num_samples samples from a flow, in standardized units.
+        Invalid draws (see valid_flow_draws) are rejected and replaced by
+        fresh draws from the same flow, until num_samples valid draws are
+        collected.
+        """
+        samples = np.empty((num_samples, len(flow.parameters)))
+        num_valid = num_drawn = 0
+        while num_valid < num_samples:
+            draws, mask = self._draw_flow(flow, num_samples - num_valid)
+            n = int(mask.sum())
+            samples[num_valid : num_valid + n] = draws[mask]
+            num_valid += n
+            num_drawn += len(draws)
+            if (
+                num_drawn >= self.MIN_DRAWS_FOR_EFFICIENCY_CHECK
+                and num_valid < self.MIN_SAMPLING_EFFICIENCY * num_drawn
+            ):
+                raise ValueError(
+                    f"NF prior sampling efficiency ({num_valid / num_drawn * 100:.2f} %) is "
+                    f"below {self.MIN_SAMPLING_EFFICIENCY}. Please verify its validity."
+                )
+        return samples
+
+    def nf_sampling_efficiency(self, num_samples: int = 1000) -> Dict[str, float]:
+        """
+        Measure the sampling efficiency of each NF prior: the fraction of
+        draws that are valid (see valid_flow_draws), based on a single batch
+        of num_samples draws per flow, without rejection.
+        """
+        efficiencies = {}
+        for flow in self.flows:
+            draws, mask = self._draw_flow(flow, num_samples)
+            efficiencies[", ".join(flow.parameters)] = mask.sum() / len(draws)
+        return efficiencies
+
     def sample(self, num_samples: int, **kwargs) -> Dict[str, Any]:
         """
         Sample parameters from the prior.
@@ -134,14 +212,6 @@ class DingoGWPrior(DingoPrior):
         Dict[str, Any]
             Dictionary of sampled parameters, where keys are parameter names
             and values are numpy arrays of shape (num_samples,).
-
-        For parameters provided by NF priors, the flows are combined into a
-        per-event mixture. Flows with identical parameter sets form a group:
-        for each event, one flow is selected from the group according to the
-        (normalized) weights, and all parameters of that event are taken from
-        the selected flow's joint draw. This preserves the correlations
-        between parameters that each flow models. Flows with non-overlapping
-        parameter sets are sampled independently.
         """
         base_samples = self._prior_dict.sample(num_samples, **kwargs)
         if not self.flows:
@@ -150,17 +220,11 @@ class DingoGWPrior(DingoPrior):
         if num_samples is None:
             num_samples = 1
 
-        # Joint draws from every flow, in standardized units. Each array has
-        # shape (num_samples, len(flow.parameters)).
-        flow_draws = []
-        for flow in self.flows:
-            draws = flow.flow.sample(num_samples=num_samples)
-            flow_draws.append(draws.detach().cpu().numpy())
-
+        flow_draws = [self._sample_flow(flow, num_samples) for flow in self.flows]
         weights = np.array([flow.weight for flow in self.flows], dtype=float)
 
         # Group the flows by their parameter sets. Within a group, one flow
-        # is selected per event, so that all parameters of an event belonging
+        # is selected per sample, so that all parameters of a sample belonging
         # to that group come from a single joint draw.
         groups = {}
         for flow_idx, flow in enumerate(self.flows):
@@ -177,8 +241,8 @@ class DingoGWPrior(DingoPrior):
                     )
                 continue
 
-            # Per-event mixture within the group: one choice of flow per
-            # event, shared by all parameters of the group.
+            # Per-sample mixture within the group: one choice of flow
+            # shared by all parameters of the group.
             group_weights = weights[flow_indices]
             group_weights = group_weights / group_weights.sum()
             chosen = np.random.choice(
