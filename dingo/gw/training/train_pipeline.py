@@ -147,12 +147,11 @@ def prepare_training_new(
     # be done without generating data (by careful calculation) and (b) could also
     # be done outside the transform setup. But for now, this is convenient. The
     # transforms will be reset later by initialize_stage().
-
     set_train_transforms(
         wfd,
         train_settings["data"],
         train_settings["training"]["stage_0"]["asd_dataset_path"],
-        extrinsic_prior,
+        extrinsic_prior=extrinsic_prior,
     )
 
     # This modifies the model settings in-place.
@@ -213,6 +212,7 @@ def prepare_training_resume(
         filename=checkpoint_name, device=local_settings["device"]
     )
     data_settings = deepcopy(pm.metadata["train_settings"]["data"])
+    train_settings = pm.metadata["train_settings"]
     # Optionally copy files to local and update path
     data_settings["waveform_dataset_path"] = copy_files_to_local(
         file_path=data_settings["waveform_dataset_path"],
@@ -223,6 +223,17 @@ def prepare_training_resume(
     wfd = build_dataset(
         data_settings=data_settings,
         leave_waveforms_on_disk=local_settings.get("leave_waveforms_on_disk", True),
+    )
+    extrinsic_prior = BBHExtrinsicPriorDict(
+        get_extrinsic_prior_dict(data_settings["extrinsic_prior"]),
+        device="cpu",
+    )
+    # Set train transforms here for potential flow extrinsic priors to propagate correctly
+    set_train_transforms(
+        wfd,
+        train_settings["data"],
+        train_settings["training"]["stage_0"]["asd_dataset_path"],
+        extrinsic_prior=extrinsic_prior,
     )
 
     if local_settings.get("wandb", False):

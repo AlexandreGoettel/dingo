@@ -59,7 +59,7 @@ class DingoGWPrior(DingoPrior):
     MIN_SAMPLING_EFFICIENCY = 0.5
     MIN_DRAWS_FOR_EFFICIENCY_CHECK = 1000
 
-    def __init__(self, prior_dict: Dict, device: str = "cuda"):
+    def __init__(self, prior_dict: Dict, device: str = "cpu"):
         """
         Initialize DingoGWPrior with a BBHPriorDict.
 
