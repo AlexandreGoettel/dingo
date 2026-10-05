@@ -1,0 +1,23 @@
+# End-to-end test analysis: a DINGO production on gaussian noise.
+# The model path is a placeholder, replaced by the workflow with the path
+# of the uploaded toy model file.
+kind: analysis
+name: dingo-e2e
+pipeline: dingo
+needs: []
+# The networks dict is set here; `available networks` is deliberately NOT used
+# so that asimov does not try to select among multiple models.
+networks:
+  model: /tmp/model/model_latest.pt
+  model init: None
+data:
+  gaussian noise: True
+  n simulation: 1
+sampler:
+  device: cpu
+  importance sample: True
+  num samples: 500
+  batch size: 500
+  importance sampling settings: Default
+waveform:
+  approximant: IMRPhenomD

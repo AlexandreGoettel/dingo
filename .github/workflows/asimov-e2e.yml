@@ -1,0 +1,203 @@
+name: Asimov end-to-end test
+
+# Real end-to-end test of the *asimov* integration (dingo/asimov/asimov.py):
+# asimov apply -> manage build submit -> monitor, against a genuine HTCondor
+# mini-cluster inside the htcondor/mini container, for asimov 0.7 and 0.8.
+#
+# Deliberately self-contained (in the spirit of the equivalent bilby_pipe CI):
+# no BayesWave PSD stage, no real strain data / GWDataFind -- dingo_pipe's
+# Gaussian-noise simulation mode is used instead. The DINGO network is a
+# small toy model (examples/toy_npe_model), uploaded manually as a workflow
+# input named `model`; see tests/e2e_asimov/README.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Trained toy DINGO model (.pt), e.g. examples/toy_npe_model training output"
+        required: true
+        type: string
+      asimov-source:
+        description: "Where to install asimov 0.8 from (git ref of AlexandreGoettel/asimov)"
+        required: false
+        default: "main"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  e2e-asimov-htcondor:
+    name: "E2E (asimov ${{ matrix.asimov-version }}, HTCondor mini)"
+    runs-on: ubuntu-latest
+    container:
+      image: htcondor/mini:latest
+      options: --privileged
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - asimov-version: "0.7"
+            asimov-spec: "asimov==0.7.1"
+          - asimov-version: "0.8"
+            asimov-spec: "git+https://github.com/AlexandreGoettel/asimov@main"
+    env:
+      CONDA_PREFIX: "/opt/conda"
+      CONDA_ENV: "asimov-e2e"
+    defaults:
+      run:
+        shell: bash -el {0}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install base tools
+        run: |
+          yum install -y sudo git wget bzip2
+
+      - name: Start HTCondor
+        run: |
+          condor_master &
+          for i in $(seq 1 30); do condor_status && break || sleep 3; done
+          condor_status
+
+      - name: Create unprivileged submit user
+        run: |
+          id -u submituser >/dev/null 2>&1 || useradd -m -s /bin/bash submituser
+          printf 'Defaults:submituser !requiretty\nsubmituser ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/submituser
+          chmod 0440 /etc/sudoers.d/submituser
+
+      - name: Workspace permissions
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/e2e_project"
+          chmod -R a+rwX "$GITHUB_WORKSPACE"
+
+      - name: Install Miniconda, asimov and this checkout of dingo
+        run: |
+          wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh
+          bash /tmp/miniconda.sh -b -p "$CONDA_PREFIX"
+          rm /tmp/miniconda.sh
+          "$CONDA_PREFIX/bin/conda" create -y -n "$CONDA_ENV" python=3.11
+          "$CONDA_PREFIX/bin/conda" run -n "$CONDA_ENV" pip install "${{ matrix.asimov-spec }}"
+          "$CONDA_PREFIX/bin/conda" run -n "$CONDA_ENV" pip install "$GITHUB_WORKSPACE"
+          chmod -R a+rx "$CONDA_PREFIX"
+          "$CONDA_PREFIX/bin/conda" run -n "$CONDA_ENV" python -c "import asimov, dingo; print('asimov', asimov.__file__); print('dingo', dingo.__file__)"
+
+      - name: Report versions
+        run: |
+          "$CONDA_PREFIX/bin/conda" run -n "$CONDA_ENV" pip show asimov dingo-gw bilby_pipe | grep -E "Name|Version|Location"
+
+      - name: Stage the toy model
+        run: |
+          # The model input is either a path inside this checkout or an
+          # https URL (e.g. attached to a GitHub release).
+          MODEL="${{ github.event.inputs.model || inputs.model }}"
+          mkdir -p /opt/dingo-model
+          case "$MODEL" in
+            https://*) curl -fsSL -o /opt/dingo-model/model_latest.pt "$MODEL" ;;
+            *) cp "$GITHUB_WORKSPACE/$MODEL" /opt/dingo-model/model_latest.pt ;;
+          esac
+          test -s /opt/dingo-model/model_latest.pt
+          chmod -R a+rX /opt/dingo-model
+
+      - name: Git config for submituser
+        run: |
+          su - submituser -s /bin/bash -c "git config --global init.defaultBranch master"
+          su - submituser -s /bin/bash -c "git config --global user.email 'you@example.com'"
+          su - submituser -s /bin/bash -c "git config --global user.name 'Your Name'"
+          su - submituser -s /bin/bash -c "git config --global --add safe.directory '$GITHUB_WORKSPACE'"
+
+      - name: Initialise asimov project
+        run: |
+          su - submituser -s /bin/bash -c "cd \"$GITHUB_WORKSPACE/e2e_project\" && \"$CONDA_PREFIX/bin/conda\" run -n \"$CONDA_ENV\" asimov init 'E2E Test Project'"
+          su - submituser -s /bin/bash -c "cd \"$GITHUB_WORKSPACE/e2e_project\" && \"$CONDA_PREFIX/bin/conda\" run -n \"$CONDA_ENV\" asimov configuration update condor/user submituser"
+          su - submituser -s /bin/bash -c "cd \"$GITHUB_WORKSPACE/e2e_project\" && \"$CONDA_PREFIX/bin/conda\" run -n \"$CONDA_ENV\" asimov configuration update condor/cache_time 30"
+          su - submituser -s /bin/bash -c "cd \"$GITHUB_WORKSPACE/e2e_project\" && \"$CONDA_PREFIX/bin/conda\" run -n \"$CONDA_ENV\" asimov configuration update condor/cron_minute '*/1'"
+          # dingo's asimov interface invokes $environment/bin/dingo_pipe
+          su - submituser -s /bin/bash -c "cd \"$GITHUB_WORKSPACE/e2e_project\" && \"$CONDA_PREFIX/bin/conda\" run -n \"$CONDA_ENV\" asimov configuration update pipelines/environment $CONDA_PREFIX/envs/$CONDA_ENV"
+
+      - name: Apply the config, event, and dingo analysis blueprints
+        run: |
+          asimov_cmd() {
+            su - submituser -s /bin/bash -c \
+              "cd \"${GITHUB_WORKSPACE}/e2e_project\" && \"${CONDA_PREFIX}/bin/conda\" run -n \"${CONDA_ENV}\" $*"
+          }
+          E2E="$GITHUB_WORKSPACE/tests/e2e_asimov"
+          # Point the analysis at the staged model.
+          sed -i "s|/tmp/model/model_latest.pt|/opt/dingo-model/model_latest.pt|" "$E2E/dingo_e2e_analysis.yaml"
+          asimov_cmd asimov apply -f "$E2E/dingo_e2e_config.yaml"
+          asimov_cmd asimov apply -f "$E2E/dingo_e2e_event.yaml"
+          asimov_cmd asimov apply -f "$E2E/dingo_e2e_analysis.yaml" -e E2E_DINGO_TEST_EVENT
+
+      - name: Build and submit the dingo DAG
+        run: |
+          su - submituser -s /bin/bash -c \
+            "cd \"${GITHUB_WORKSPACE}/e2e_project\" && \"${CONDA_PREFIX}/bin/conda\" run -n \"${CONDA_ENV}\" asimov manage build submit"
+
+      - name: Wait for the importance-sampled result
+        run: |
+          wait_for_files() {
+            local directory="$1" pattern="$2"
+            local timeout="${3:-1200}" interval="${4:-30}" elapsed=0
+            echo "Waiting for '${pattern}' in '${directory}' (timeout: ${timeout}s)"
+            while [ "$elapsed" -lt "$timeout" ]; do
+              su - submituser -s /bin/bash -c "condor_q" || true
+              for f in "${GITHUB_WORKSPACE}/e2e_project/${directory}"/${pattern}; do
+                if [ -e "$f" ]; then
+                  echo "Found: $f"
+                  return 0
+                fi
+              done
+              echo "  ${elapsed}s / ${timeout}s elapsed — not present, waiting..."
+              sleep "$interval"
+              elapsed=$((elapsed + interval))
+            done
+            echo "Timeout: '${pattern}' not found in '${directory}'"
+            ls -R "${GITHUB_WORKSPACE}/e2e_project/${directory}/" || true
+            return 1
+          }
+          wait_for_files "working/E2E_DINGO_TEST_EVENT/dingo-e2e/result" "*importance_sampling.hdf5" 1800 30
+
+      - name: Monitor and verify the production completed
+        run: |
+          cat > /tmp/verify_e2e.py <<'EOF'
+          import sys
+          from asimov.monitor_api import get_analysis_status
+          statuses = get_analysis_status()
+          print('Final analysis statuses:')
+          failures = []
+          for name, status in statuses.items():
+              print(f'  {name}: {status}')
+              if str(status).lower() not in ('complete', 'finished', 'uploaded'):
+                  failures.append(f'{name}: {status}')
+          if failures:
+              print(f'FAIL: {len(failures)} analyses not complete:')
+              [print(f'  - {f}') for f in failures]
+              sys.exit(1)
+          print(f'All {len(statuses)} analyses are complete!')
+          EOF
+          chmod 644 /tmp/verify_e2e.py
+          asimov_e2e() {
+            su - submituser -s /bin/bash -c \
+              "cd \"${GITHUB_WORKSPACE}/e2e_project\" && \"${CONDA_PREFIX}/bin/conda\" run -n \"${CONDA_ENV}\" $*"
+          }
+          asimov_e2e asimov monitor
+          asimov_e2e python3 /tmp/verify_e2e.py
+
+      - name: Archive artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: asimov-e2e-debug-${{ matrix.asimov-version }}
+          path: |
+            e2e_project/checkouts/
+            e2e_project/working/
+            e2e_project/.asimov/
+          retention-days: 5
+
+      - name: Clean up condor queue
+        if: always()
+        run: condor_rm -all || true

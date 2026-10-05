@@ -15,7 +15,6 @@ from asimov.pipeline import (
     Pipeline,
     PipelineException,
     PipelineLogger,
-    PESummaryPipeline,
 )
 
 from dingo.gw.result import Result
@@ -436,12 +435,11 @@ class Dingo(Pipeline):
             ) from error
 
     def after_completion(self):
-        post_pipeline = PESummaryPipeline(production=self.production)
-        self.logger.info("Job has completed. Running PE Summary.")
-        cluster = post_pipeline.submit_dag()
-        self.production.meta["job id"] = int(cluster)
-        self.production.status = "processing"
-        self.production.event.update_data()
+        """Post-completion hook. PESummary, if requested, is a separate
+        asimov production wired up through the ``needs:`` dependency system
+        rather than launched from here (PESummaryPipeline was removed from
+        asimov in 0.7.0)."""
+        self.production.status = "finished"
 
     def detect_completion_processing(self):
         # no post processing currently performed

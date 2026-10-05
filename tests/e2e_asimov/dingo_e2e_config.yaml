@@ -1,0 +1,23 @@
+# End-to-end test configuration for the dingo pipeline.
+kind: configuration
+pipelines:
+  dingo:
+    scheduler:
+      accounting group: ligo.dev.o4.cbc.pe.dingo
+      generation pool: local
+      request memory sampling: 4
+      request memory importance sampling: 8
+      request memory generation: 4
+      request cpus sampling: 1
+      request cpus importance sampling: 1
+      request disk: 8
+      n parallel: 1
+      transfer files: False
+      environment variables: "{'OMP_NUM_THREADS': 1}"
+    sampler:
+      device: cpu
+      importance sample: True
+      num samples: 500
+      batch size: 500
+      importance sampling settings: Default
+postprocessing: {}

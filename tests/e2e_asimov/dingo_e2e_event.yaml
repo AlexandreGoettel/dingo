@@ -1,0 +1,66 @@
+data:
+  segment length: 4
+event time: 1126259462.391
+gid: G190047
+interferometers:
+- H1
+- L1
+kind: event
+likelihood:
+  psd length: 4
+  reference frequency: 20
+  sample rate: 2048
+  segment start: 1126259460.391
+  start frequency: 13.333333333333334
+  window length: 4
+  minimum frequency:
+    H1: 20
+    L1: 20
+  maximum frequency:
+    H1: 1024
+    L1: 1024
+name: E2E_DINGO_TEST_EVENT
+priors:
+  amplitude order: 1
+  chirp mass:
+    maximum: 41.97447913941358
+    minimum: 21.418182160215295
+    type: bilby.gw.prior.UniformInComponentsChirpMass
+  mass ratio:
+    maximum: 1.0
+    minimum: 0.125
+    type: bilby.gw.prior.UniformInComponentsMassRatio
+  luminosity distance:
+    maximum: 1000
+    minimum: 100
+    type: bilby.core.prior.Uniform
+  geocentric time:
+    maximum: 0.1
+    minimum: -0.1
+    type: bilby.core.prior.Uniform
+    boundary: periodic
+  mass 1:
+    type: Constraint
+    minimum: 10
+    maximum: 80
+  mass 2:
+    type: Constraint
+    minimum: 10
+    maximum: 80
+quality:
+  minimum frequency:
+    H1: 20
+    L1: 20
+  maximum frequency:
+    H1: 1024
+    L1: 1024
+scheduler:
+  accounting group: ligo.dev.o4.cbc.pe.dingo
+  request memory sampling: 4
+  request memory importance sampling: 8
+  request memory generation: 4
+  request cpus sampling: 1
+  request cpus importance sampling: 1
+  request disk: 8
+  generation pool: local
+  n parallel: 1
