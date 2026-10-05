@@ -72,16 +72,13 @@ def get_mismatch(a, b, domain, asd_file=None):
     return 1 - overlap
 
 
-def get_standardization_dict(
-    ext_prior: BBHExtrinsicPriorDict, wfd, selected_parameters, transform=None
-):
+def get_standardization_dict(wfd, selected_parameters, transform=None):
     """
     Calculates the mean and standard deviation of parameters. This is needed for
     standardizing neural-network input and output.
 
     Parameters
     ----------
-    ext_prior : dict
     wfd : WaveformDataset
     selected_parameters : list[str]
         List of parameters for which to estimate standardization factors.
@@ -97,10 +94,11 @@ def get_standardization_dict(
     # The intrinsic standardization is estimated based on the entire dataset.
     mean_intrinsic, std_intrinsic = wfd.parameter_mean_std()
 
-    # Some of the extrinsic prior parameters have analytic means and standard
-    # deviations. If possible, this will either get these, or else it will estimate
-    # them numerically.
-    mean_extrinsic, std_extrinsic = ext_prior.mean_std(ext_prior.keys())
+    # Some of the extrinsic prior parameters have analytic means and standard deviations.
+    # If possible, this will either get these, or else it will estimate them numerically.
+    mean_extrinsic, std_extrinsic = wfd.extrinsic_prior.mean_std(
+        wfd.extrinsic_prior.keys()
+    )
 
     # Check that overlap between intrinsic and extrinsic parameters is only
     # due to fiducial values (-> std 0)

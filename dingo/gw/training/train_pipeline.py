@@ -18,8 +18,6 @@ from dingo.core.utils import (build_train_and_test_loaders,
                               set_requires_grad_flag)
 from dingo.core.utils.trainutils import EarlyStopping, RuntimeLimits
 from dingo.gw.dataset import WaveformDataset
-from dingo.gw.gwutils import get_extrinsic_prior_dict
-from dingo.gw.prior import BBHExtrinsicPriorDict
 from dingo.gw.training.train_builders import (build_dataset,
                                               build_svd_for_embedding_network,
                                               set_train_transforms)
@@ -111,17 +109,9 @@ def prepare_training_new(
     )  # No transforms yet
     initial_weights = {}
 
-    extrinsic_prior = BBHExtrinsicPriorDict(
-        get_extrinsic_prior_dict(data_settings["extrinsic_prior"]),
-        # NF prior flows are sampled inside DataLoader worker processes,
-        # which are forked from this process. CUDA cannot be re-initialized
-        # in forked subprocesses, so if num_workers != 0, the flows must live on the CPU.
-        device="cpu",
-    )
-
-    if extrinsic_prior.flows:
+    if wfd.extrinsic_prior.flows:
         print("NF prior sampling efficiencies:")
-        for params, eff in extrinsic_prior.nf_sampling_efficiency().items():
+        for params, eff in wfd.extrinsic_prior.nf_sampling_efficiency().items():
             print(f"  {params}: {eff * 100:.2f} %")
 
     # The embedding network is assumed to have an SVD projection layer. If other types
@@ -137,7 +127,6 @@ def prepare_training_new(
             num_workers=local_settings["num_workers"],
             batch_size=train_settings["training"]["stage_0"]["batch_size"],
             out_dir=train_dir,
-            extrinsic_prior=extrinsic_prior,
             **train_settings["model"]["embedding_kwargs"]["svd"],
         )
 
@@ -151,7 +140,6 @@ def prepare_training_new(
         wfd,
         train_settings["data"],
         train_settings["training"]["stage_0"]["asd_dataset_path"],
-        extrinsic_prior=extrinsic_prior,
     )
 
     # This modifies the model settings in-place.
@@ -212,7 +200,6 @@ def prepare_training_resume(
         filename=checkpoint_name, device=local_settings["device"]
     )
     data_settings = deepcopy(pm.metadata["train_settings"]["data"])
-    train_settings = pm.metadata["train_settings"]
     # Optionally copy files to local and update path
     data_settings["waveform_dataset_path"] = copy_files_to_local(
         file_path=data_settings["waveform_dataset_path"],
@@ -224,17 +211,9 @@ def prepare_training_resume(
         data_settings=data_settings,
         leave_waveforms_on_disk=local_settings.get("leave_waveforms_on_disk", True),
     )
-    extrinsic_prior = BBHExtrinsicPriorDict(
-        get_extrinsic_prior_dict(data_settings["extrinsic_prior"]),
-        device="cpu",
-    )
-    # Set train transforms here for potential flow extrinsic priors to propagate correctly
-    set_train_transforms(
-        wfd,
-        train_settings["data"],
-        train_settings["training"]["stage_0"]["asd_dataset_path"],
-        extrinsic_prior=extrinsic_prior,
-    )
+    # The extrinsic prior is set on the wfd by build_dataset(), so no transforms
+    # need to be set here: initialize_stage() will set them, drawing the prior
+    # from the wfd.
 
     if local_settings.get("wandb", False):
         try:

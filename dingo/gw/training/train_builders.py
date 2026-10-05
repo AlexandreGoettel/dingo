@@ -11,7 +11,7 @@ from dingo.gw.dataset.waveform_dataset import WaveformDataset
 from dingo.gw.domains import build_domain
 from dingo.gw.gwutils import *
 from dingo.gw.noise.asd_dataset import ASDDataset
-from dingo.gw.prior import default_inference_parameters
+from dingo.gw.prior import BBHExtrinsicPriorDict, default_inference_parameters
 from dingo.gw.SVD import SVDBasis
 from dingo.gw.transforms import (AddAntiglitch, AddWhiteNoiseComplex,
                                  CropMaskStrainRandom, GetDetectorTimes,
@@ -25,6 +25,7 @@ from dingo.gw.transforms import (AddAntiglitch, AddWhiteNoiseComplex,
 def build_dataset(
     data_settings: dict,
     leave_waveforms_on_disk: Optional[bool] = False,
+    device: str = "cpu",
 ) -> WaveformDataset:
     """Build a dataset based on a settings dictionary. This should contain the path of
     a saved waveform dataset.
@@ -35,9 +36,14 @@ def build_dataset(
     ----------
     data_settings : dict
     leave_waveforms_on_disk: bool
-        If provided, the values associated with the waveforms will not be loaded into memory during initialization.
-        Instead, they will be loaded from disk when the dataset is accessed. This is useful for reducing the memory
-        load of large datasets, but can slow down data preprocessing.
+        If provided, the values associated with the waveforms will not be loaded into memory
+        during initialization. Instead, they will be loaded from disk when the dataset is
+        accessed. This is useful for reducing the memory load of large datasets, but can slow down
+        data preprocessing.
+
+    If the extrinsic priors contain NF priors:
+    NF prior flows are sampled inside DataLoader worker processes. CUDA cannot be
+    re-initialized in forked subprocesses, so if num_workers != 0, the flows must live on the CPU.
 
     Returns
     -------
@@ -53,6 +59,10 @@ def build_dataset(
         svd_size_update=data_settings.get("svd_size_update"),
         leave_waveforms_on_disk=leave_waveforms_on_disk,
     )
+    wfd.extrinsic_prior = BBHExtrinsicPriorDict(
+        get_extrinsic_prior_dict(data_settings["extrinsic_prior"]),
+        device=device,
+    )
     return wfd
 
 
@@ -60,7 +70,6 @@ def set_train_transforms(
     wfd: WaveformDataset,
     data_settings: dict,
     asd_dataset_path: str,
-    extrinsic_prior: Optional[dict] = None,
     omit_transforms: List[Any] = None,
 ):
     """
@@ -104,21 +113,11 @@ def set_train_transforms(
     # Build detector objects
     ifo_list = InterferometerList(data_settings["detectors"])
 
-    # Build transforms.
-    if extrinsic_prior is None:
-        # If transforms have been set before, then
-        # an extrinsic prior is already in wfd
-        for transform in wfd.transform.transforms:
-            if isinstance(transform, SampleExtrinsicParameters):
-                extrinsic_prior = transform.prior
-                break
-        else:
-            raise ValueError(
-                "Trying to get extrinsic prior from WaveformDataset, but no "
-                "SampleExtrinsicParameters found."
-            )
+    # The extrinsic prior is set on the dataset by build_dataset().
+    if wfd.extrinsic_prior is None:
+        raise ValueError("No extrinsic prior set on the WaveformDataset.")
     transforms = [
-        SampleExtrinsicParameters(extrinsic_prior),
+        SampleExtrinsicParameters(wfd.extrinsic_prior),
         GetDetectorTimes(ifo_list, ref_time),
     ]
 
@@ -156,7 +155,6 @@ def set_train_transforms(
     except KeyError:
         print("Calculating new parameter standardizations.")
         standardization_dict = get_standardization_dict(
-            extrinsic_prior,
             wfd,
             data_settings["inference_parameters"] + data_settings["context_parameters"],
             torchvision.transforms.Compose(transforms),
@@ -171,7 +169,7 @@ def set_train_transforms(
     if not data_settings.get("zero_noise", False):
         transforms.append(AddWhiteNoiseComplex())
     # Only add the glitch transform if compatible priors are given
-    if any(("glitch" in prior for prior in extrinsic_prior)):
+    if any(("glitch" in prior for prior in wfd.extrinsic_prior)):
         transforms.append(AddAntiglitch(domain))
     transforms.append(
         SelectStandardizeRepackageParameters(
@@ -211,7 +209,6 @@ def build_svd_for_embedding_network(
     size: int,
     num_training_samples: int,
     num_validation_samples: int,
-    extrinsic_prior: dict,
     num_workers: int = 0,
     batch_size: int = 1000,
     out_dir: Optional[str] = None,
@@ -255,7 +252,8 @@ def build_svd_for_embedding_network(
     torch.multiprocessing.set_sharing_strategy("file_system")
 
     # Fix the luminosity distance to a standard value, just in order to generate the SVD.
-    extrinsic_prior["luminosity_distance"] = "100.0"
+    # TODO: whay was this here?
+    # extrinsic_prior["luminosity_distance"] = "100.0"
 
     # Build the dataset, but with certain transforms omitted. In particular, we want to
     # build the SVD based on zero-noise waveforms. They should still be whitened though.
@@ -263,7 +261,6 @@ def build_svd_for_embedding_network(
         wfd,
         data_settings,
         asd_dataset_path,
-        extrinsic_prior,
         omit_transforms=[
             AddWhiteNoiseComplex,
             RepackageStrainsAndASDS,
