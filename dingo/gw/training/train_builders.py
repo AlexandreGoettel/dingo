@@ -270,17 +270,22 @@ def build_svd_for_embedding_network(
 
     # Build the dataset, but with certain transforms omitted. In particular, we want to
     # build the SVD based on zero-noise waveforms. They should still be whitened though.
+    # With the glitchless_svd flag, also omit the glitch injection, so that the SVD is
+    # built from glitchless waveforms.
+    omit_transforms = [
+        AddWhiteNoiseComplex,
+        RepackageStrainsAndASDS,
+        SelectStandardizeRepackageParameters,
+        UnpackDict,
+        CropMaskStrainRandom,
+    ]
+    if data_settings.get("glitchless_svd", False):
+        omit_transforms.append(AddAntiglitch)
     set_train_transforms(
         wfd,
         data_settings,
         asd_dataset_path,
-        omit_transforms=[
-            AddWhiteNoiseComplex,
-            RepackageStrainsAndASDS,
-            SelectStandardizeRepackageParameters,
-            UnpackDict,
-            CropMaskStrainRandom,
-        ],
+        omit_transforms=omit_transforms,
     )
 
     print("Generating waveforms for embedding network SVD initialization.")
