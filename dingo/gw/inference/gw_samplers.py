@@ -1,45 +1,35 @@
-from typing import Union, Protocol
+from typing import Protocol, Union
 
 import numpy as np
 import pandas as pd
 from astropy.time import Time
-from bilby.core.prior import PriorDict, DeltaFunction, Constraint
+from bilby.core.prior import Constraint, DeltaFunction, PriorDict
 from bilby.gw.detector import InterferometerList
 from torchvision.transforms import Compose
 
-from dingo.core.samplers import Sampler, GNPESampler
+from dingo.core.samplers import GNPESampler, Sampler
 from dingo.core.transforms import GetItem, RenameKey
-from dingo.gw.domains import (
-    MultibandedFrequencyDomain,
-    build_domain_from_model_metadata,
-    UniformFrequencyDomain,
-    Domain,
-)
-from dingo.gw.domains import build_domain
+from dingo.gw.domains import (Domain, MultibandedFrequencyDomain,
+                              UniformFrequencyDomain, build_domain,
+                              build_domain_from_model_metadata)
 from dingo.gw.gwutils import get_extrinsic_prior_dict
 from dingo.gw.prior import build_prior_with_defaults
 from dingo.gw.result import Result
-from dingo.gw.transforms import (
-    WhitenAndScaleStrain,
-    RepackageStrainsAndASDS,
-    ToTorch,
-    SelectStandardizeRepackageParameters,
-    GNPECoalescenceTimes,
-    TimeShiftStrain,
-    GNPEBase,
-    PostCorrectGeocentTime,
-    CopyToExtrinsicParameters,
-    GetDetectorTimes,
-    DecimateWaveformsAndASDS,
-    MaskDataForFrequencyRangeUpdate,
-)
+from dingo.gw.transforms import (ClipWaveform, CopyToExtrinsicParameters,
+                                 DecimateWaveformsAndASDS, GetDetectorTimes,
+                                 GNPEBase, GNPECoalescenceTimes,
+                                 MaskDataForFrequencyRangeUpdate,
+                                 PostCorrectGeocentTime,
+                                 RepackageStrainsAndASDS,
+                                 SelectStandardizeRepackageParameters,
+                                 TimeShiftStrain, ToTorch,
+                                 WhitenAndScaleStrain)
 
 
 class SamplerProtocol(Protocol):
     base_model_metadata: dict
 
-    def _initialize_transforms(self) -> None:
-        ...
+    def _initialize_transforms(self) -> None: ...
 
 
 class _GWMixinProtocol(SamplerProtocol):
@@ -79,6 +69,10 @@ class GWSamplerMixin(object):
         return self.base_model_metadata["train_settings"]["data"].get(
             "random_strain_cropping"
         )
+
+    @property
+    def waveform_clip(self: SamplerProtocol):
+        return self.base_model_metadata["train_settings"]["data"].get("waveform_clip")
 
     @property
     def minimum_frequency(self) -> float | dict[str, float]:
@@ -172,7 +166,6 @@ class GWSamplerMixin(object):
         data_settings = self.base_model_metadata["train_settings"]["data"]
         if "domain_update" in data_settings:
             self.domain.update(data_settings["domain_update"])
-
 
     def _correct_reference_time(
         self: Sampler, samples: Union[dict, pd.DataFrame], inverse: bool = False
@@ -297,6 +290,9 @@ class GWSampler(GWSamplerMixin, Sampler):
         #   * whiten and scale strain (since the inference network expects standardized
         #   data)
         transform_pre.append(WhitenAndScaleStrain(self.domain.noise_std))
+        # Clip the whitened strain, if the model was trained with clipped waveforms.
+        if self.waveform_clip is not None:
+            transform_pre.append(ClipWaveform(max_abs=self.waveform_clip))
         if self.frequency_updates:
             # * update frequency range
             # Needs to happen before RepackageStrainsAndASDs since we might need to apply

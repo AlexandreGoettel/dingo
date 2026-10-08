@@ -14,9 +14,9 @@ from dingo.gw.noise.asd_dataset import ASDDataset
 from dingo.gw.prior import BBHExtrinsicPriorDict, default_inference_parameters
 from dingo.gw.SVD import SVDBasis
 from dingo.gw.transforms import (AddAntiglitch, AddWhiteNoiseComplex,
-                                 CropMaskStrainRandom, GetDetectorTimes,
-                                 GNPECoalescenceTimes, ProjectOntoDetectors,
-                                 RepackageStrainsAndASDS,
+                                 ClipWaveform, CropMaskStrainRandom,
+                                 GetDetectorTimes, GNPECoalescenceTimes,
+                                 ProjectOntoDetectors, RepackageStrainsAndASDS,
                                  SampleExtrinsicParameters, SampleNoiseASD,
                                  SelectStandardizeRepackageParameters,
                                  UnpackDict, WhitenAndScaleStrain)
@@ -171,6 +171,9 @@ def set_train_transforms(
     # Only add the glitch transform if compatible priors are given
     if any(("glitch" in prior for prior in wfd.extrinsic_prior)):
         transforms.append(AddAntiglitch(domain))
+    # Clip the waveforms if a clip value is specified in the train settings
+    if "waveform_clip" in data_settings:
+        transforms.append(ClipWaveform(max_abs=data_settings["waveform_clip"]))
     transforms.append(
         SelectStandardizeRepackageParameters(
             {

@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 
 from dingo.gw.domains import UniformFrequencyDomain
 
@@ -46,6 +47,37 @@ def antiglitch_model(
     phase_term = 1j * phi.reshape(-1, 1) - 2j * np.pi * fk * t0.reshape(-1, 1)
     norm = np.sum(np.abs(h0), axis=1, keepdims=True)
     return amp.reshape(-1, 1) * np.exp(phase_term) * h0 / norm
+
+
+class ClipWaveform(object):
+    """Clips the absolute values of the waveforms to a maximum value.
+
+    This is applied at the same stage of the data pipeline during training and
+    inference (to the whitened strain), so that the network never sees
+    out-of-distribution amplitudes.
+    """
+
+    def __init__(self, max_abs: float = 1.0):
+        self.max_abs = max_abs
+
+    def __call__(self, input_sample):
+        sample = input_sample.copy()
+
+        for ifo, w in sample["waveform"].items():
+            sample["waveform"][ifo] = self.clip_array(w)
+
+        return sample
+
+    def clip_array(self, w):
+        if isinstance(w, torch.Tensor):
+            abs_w = torch.abs(w)
+            mask = abs_w > self.max_abs
+            return torch.where(mask, w / abs_w * self.max_abs, w)
+        abs_w = np.abs(w)
+        mask = abs_w > self.max_abs
+        w = np.array(w, copy=True)
+        w[mask] = w[mask] / abs_w[mask] * self.max_abs
+        return w
 
 
 class AddAntiglitch(object):
