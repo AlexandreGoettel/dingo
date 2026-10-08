@@ -18,6 +18,7 @@ from dingo.gw.transforms import (AddAntiglitch, AddWhiteNoiseComplex,
                                  GetDetectorTimes, GNPECoalescenceTimes,
                                  ProjectOntoDetectors, RepackageStrainsAndASDS,
                                  SampleExtrinsicParameters, SampleNoiseASD,
+                                 ScaleWaveformLog,
                                  SelectStandardizeRepackageParameters,
                                  UnpackDict, WhitenAndScaleStrain)
 
@@ -171,6 +172,15 @@ def set_train_transforms(
     # Only add the glitch transform if compatible priors are given
     if any(("glitch" in prior for prior in wfd.extrinsic_prior)):
         transforms.append(AddAntiglitch(domain))
+    # Compress waveform amplitudes above a threshold with a log transform if
+    # specified in the train settings. Accepts a scalar (= max_abs) or a dict
+    # of ScaleWaveformLog kwargs (e.g., {max_abs: 1.0, slope: 0.5}).
+    if "waveform_log_scale" in data_settings:
+        scale_settings = data_settings["waveform_log_scale"]
+        if isinstance(scale_settings, dict):
+            transforms.append(ScaleWaveformLog(**scale_settings))
+        else:
+            transforms.append(ScaleWaveformLog(max_abs=scale_settings))
     # Clip the waveforms if a clip value is specified in the train settings
     if "waveform_clip" in data_settings:
         transforms.append(ClipWaveform(max_abs=data_settings["waveform_clip"]))

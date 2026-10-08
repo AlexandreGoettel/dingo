@@ -20,7 +20,7 @@ from dingo.gw.transforms import (ClipWaveform, CopyToExtrinsicParameters,
                                  GNPEBase, GNPECoalescenceTimes,
                                  MaskDataForFrequencyRangeUpdate,
                                  PostCorrectGeocentTime,
-                                 RepackageStrainsAndASDS,
+                                 RepackageStrainsAndASDS, ScaleWaveformLog,
                                  SelectStandardizeRepackageParameters,
                                  TimeShiftStrain, ToTorch,
                                  WhitenAndScaleStrain)
@@ -73,6 +73,12 @@ class GWSamplerMixin(object):
     @property
     def waveform_clip(self: SamplerProtocol):
         return self.base_model_metadata["train_settings"]["data"].get("waveform_clip")
+
+    @property
+    def waveform_log_scale(self: SamplerProtocol):
+        return self.base_model_metadata["train_settings"]["data"].get(
+            "waveform_log_scale"
+        )
 
     @property
     def minimum_frequency(self) -> float | dict[str, float]:
@@ -290,6 +296,15 @@ class GWSampler(GWSamplerMixin, Sampler):
         #   * whiten and scale strain (since the inference network expects standardized
         #   data)
         transform_pre.append(WhitenAndScaleStrain(self.domain.noise_std))
+        # Log-compress the whitened strain, if the model was trained with
+        # log-scaled waveforms. Applied at the same stage as during training.
+        # Accepts a scalar (= max_abs) or a dict of ScaleWaveformLog kwargs.
+        if self.waveform_log_scale is not None:
+            scale_settings = self.waveform_log_scale
+            if isinstance(scale_settings, dict):
+                transform_pre.append(ScaleWaveformLog(**scale_settings))
+            else:
+                transform_pre.append(ScaleWaveformLog(max_abs=scale_settings))
         # Clip the whitened strain, if the model was trained with clipped waveforms.
         if self.waveform_clip is not None:
             transform_pre.append(ClipWaveform(max_abs=self.waveform_clip))

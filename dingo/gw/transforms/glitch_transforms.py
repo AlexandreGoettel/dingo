@@ -80,6 +80,50 @@ class ClipWaveform(object):
         return w
 
 
+class ScaleWaveformLog(object):
+    """Compresses waveform amplitudes above max_abs with a logarithm.
+
+    For magnitudes m = |w|, the (continuous injective) transform is
+
+        m' = m                                          for m <= max_abs
+        m' = max_abs * (1 + slope * log(m / max_abs))   for m > max_abs
+
+    applied per bin while preserving phase, i.e., w' = (m' / m) * w. slope
+    controls the strength of the compression.
+    """
+
+    def __init__(self, max_abs: float = 1.0, slope: float = 1.0):
+        if slope <= 0:
+            raise ValueError(f"slope must be positive, got {slope}.")
+        self.max_abs = max_abs
+        self.slope = slope
+
+    def __call__(self, input_sample):
+        sample = input_sample.copy()
+
+        for ifo, w in sample["waveform"].items():
+            sample["waveform"][ifo] = self.scale_array(w)
+
+        return sample
+
+    def scale_array(self, w):
+        if isinstance(w, torch.Tensor):
+            abs_w = torch.abs(w)
+            mask = abs_w > self.max_abs
+            w = w.clone()
+            m_scaled = self.max_abs * (
+                1 + self.slope * torch.log(abs_w[mask] / self.max_abs)
+            )
+            w[mask] = w[mask] / abs_w[mask] * m_scaled
+            return w
+        abs_w = np.abs(w)
+        mask = abs_w > self.max_abs
+        w = np.array(w, copy=True)
+        m_scaled = self.max_abs * (1 + self.slope * np.log(abs_w[mask] / self.max_abs))
+        w[mask] = w[mask] / abs_w[mask] * m_scaled
+        return w
+
+
 class AddAntiglitch(object):
     """Adds analytic glitches based on doi.org/10.1103/PhysRevD.108.122004."""
 
