@@ -2,17 +2,18 @@
 Step 1: Train unconditional nde
 Step 2: Set up likelihood and prior
 """
+
+import argparse
+from os import makedirs, rename
+from os.path import dirname, exists, isfile, join
 from pathlib import Path
 
 import yaml
-from os import rename, makedirs
-from os.path import dirname, join, isfile, exists
-import argparse
 
 from dingo.core.posterior_models import NormalizingFlowPosteriorModel
-from dingo.gw.result import Result
-from dingo.gw.inference.gw_samplers import GWSampler
 from dingo.gw.importance_sampling.diagnostics import plot_diagnostics
+from dingo.gw.inference.gw_samplers import GWSampler
+from dingo.gw.result import Result
 
 
 def parse_args():
@@ -64,6 +65,19 @@ def main():
     )
     synthetic_phase_kwargs = settings.get("synthetic_phase", None)
     synthetic_phase = synthetic_phase_kwargs is not None
+    synthetic_parameters_kwargs = settings.get("synthetic_parameters")
+    if synthetic_parameters_kwargs is not None:
+        if synthetic_phase:
+            raise ValueError(
+                "Specify only one of synthetic_phase and synthetic_parameters."
+            )
+        if phase_marginalization or time_marginalization:
+            raise ValueError(
+                "Synthetic recovery cannot be combined with time or phase marginalization."
+            )
+        result._validate_synthetic_parameters(
+            synthetic_parameters_kwargs, require_log_prob="nde" not in settings
+        )
     # if sum([time_marginalization, phase_marginalization, synthetic_phase]) > 1:
     #    raise NotImplementedError(
     #        "Only one of time_marginalization, phase_marginalization and"
@@ -161,7 +175,24 @@ def main():
     # log_evidences_std = np.array(log_evidences_std)
     # print(np.std(log_evidences) / np.mean(log_evidences_std))
 
-    if synthetic_phase:
+    if "add_glitch" in settings:
+        if (
+            synthetic_parameters_kwargs is not None
+            and synthetic_parameters_kwargs.get("add_glitch", settings["add_glitch"])
+            != settings["add_glitch"]
+        ):
+            raise ValueError("Conflicting add_glitch settings.")
+        result.add_glitch = settings["add_glitch"]
+
+    if synthetic_parameters_kwargs is not None:
+        print("Sampling synthetic phase and psi.")
+        result.sample_synthetic_parameters(
+            {
+                "num_processes": settings.get("num_processes", 1),
+                **synthetic_parameters_kwargs,
+            }
+        )
+    elif synthetic_phase:
         print(f"Sampling synthetic phase.")
         result.sample_synthetic_phase(synthetic_phase_kwargs)
 

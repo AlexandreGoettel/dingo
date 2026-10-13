@@ -3,10 +3,12 @@ from copy import deepcopy
 from typing import Any, Dict
 
 import numpy as np
+import torch
 from bilby.core.prior import Cosine, Sine, Uniform
 from bilby.gw.conversion import (convert_to_lal_binary_black_hole_parameters,
                                  fill_from_fixed_priors)
 from bilby.gw.prior import BBHPriorDict
+from scipy.special import logsumexp
 
 from dingo.core.posterior_models import NormalizingFlowPosteriorModel
 from dingo.core.prior import DingoPrior
@@ -16,6 +18,11 @@ logging.getLogger("bilby").setLevel("ERROR")
 
 
 class NFPrior:
+
+    # Bounds are enforced by rejection in DingoGWPrior.sample(). Estimate the
+    # retained mass once, with an isolated RNG, to normalize the same density.
+    NORMALIZATION_SAMPLES = 100_000
+    EVALUATION_BATCH_SIZE = 4096
 
     def __init__(
         self,
@@ -36,6 +43,7 @@ class NFPrior:
         self.weight = weight
         self.model_filename = model_filename
         self.bounds = bounds
+        self._log_bounds_mass = None
 
     def min(self, x):
         """If configured in train.yml, return the minimum allowed value for parameter x."""
@@ -48,6 +56,97 @@ class NFPrior:
         if self.bounds is None or self.bounds.get(x, {}).get("max") is None:
             return None
         return float(self.bounds[x]["max"])
+
+    def ln_prob(self, sample):
+        """Joint density in physical coordinates, matching the rejection sampler.
+
+        Each flow is trained on standardized parameters. Include the inverse
+        standardization Jacobian and, for bounded priors, the cached Monte Carlo
+        estimate of the rejection normalization.
+        """
+        values = np.stack(
+            np.broadcast_arrays(
+                *[np.asarray(sample[p], dtype=float) for p in self.parameters]
+            ),
+            axis=-1,
+        )
+        mean = np.array([self.standardization["mean"][p] for p in self.parameters])
+        std = np.array([self.standardization["std"][p] for p in self.parameters])
+        if not np.all(np.isfinite(std) & (std > 0)):
+            raise ValueError(
+                "NF prior standard deviations must be finite and positive."
+            )
+        standardized = ((values - mean) / std).reshape(-1, len(self.parameters))
+        valid = DingoGWPrior._valid_flow_draws(self, standardized)
+        log_prob = np.full(len(standardized), -np.inf)
+        indices = np.flatnonzero(valid)
+        if len(indices):
+            log_normalization = self._bounds_log_mass()
+            with torch.no_grad():
+                for start in range(0, len(indices), self.EVALUATION_BATCH_SIZE):
+                    selected = indices[start : start + self.EVALUATION_BATCH_SIZE]
+                    inputs = torch.as_tensor(
+                        standardized[selected],
+                        device=self.flow.device,
+                        dtype=torch.float32,
+                    )
+                    log_prob[selected] = (
+                        self.flow.log_prob(inputs).detach().cpu().numpy().reshape(-1)
+                        - np.log(std).sum()
+                        - log_normalization
+                    )
+        return log_prob.reshape(values.shape[:-1])
+
+    def _bounds_log_mass(self):
+        """Log probability retained by the bounds; zero for an unbounded flow.
+
+        The fixed seed makes rebuilding/reloading a prior reproducible without
+        advancing the caller's torch RNG. The Monte Carlo error is at most about
+        0.0032 relative standard deviation at the minimum supported 50% acceptance.
+        """
+        if self._log_bounds_mass is not None:
+            return self._log_bounds_mass
+        if all(self.min(p) is None and self.max(p) is None for p in self.parameters):
+            self._log_bounds_mass = 0.0
+            return self._log_bounds_mass
+        device = torch.device(self.flow.device)
+        devices = []
+        if device.type == "cuda":
+            devices = [
+                (
+                    device.index
+                    if device.index is not None
+                    else torch.cuda.current_device()
+                )
+            ]
+        accepted = 0
+        with torch.random.fork_rng(devices=devices), torch.no_grad():
+            torch.random.default_generator.manual_seed(150914)
+            if devices:
+                with torch.cuda.device(devices[0]):
+                    torch.cuda.manual_seed(150914)
+            for start in range(
+                0, self.NORMALIZATION_SAMPLES, self.EVALUATION_BATCH_SIZE
+            ):
+                count = min(
+                    self.EVALUATION_BATCH_SIZE, self.NORMALIZATION_SAMPLES - start
+                )
+                _, valid = DingoGWPrior._draw_flow(self, count)
+                accepted += np.count_nonzero(valid)
+        probability = accepted / self.NORMALIZATION_SAMPLES
+        if probability < DingoGWPrior.MIN_SAMPLING_EFFICIENCY:
+            raise ValueError(
+                f"NF prior {self.model_filename} has estimated bounds acceptance "
+                f"{probability:.3f}, below {DingoGWPrior.MIN_SAMPLING_EFFICIENCY}."
+            )
+        self._log_bounds_mass = float(np.log(probability))
+        logging.getLogger(__name__).info(
+            "NF prior %s: bounds normalization estimated from %d draws (acceptance %.6f).",
+            self.model_filename,
+            self.NORMALIZATION_SAMPLES,
+            probability,
+        )
+        return self._log_bounds_mass
 
 
 class DingoGWPrior(DingoPrior):
@@ -307,9 +406,82 @@ class DingoGWPrior(DingoPrior):
 
         return self._prior_dict.sample_subset(keys, size)
 
-    def ln_prob(self, *args, **kwargs):
-        """Delegate to BBHPriorDict.ln_prob"""
-        return self._prior_dict.ln_prob(*args, **kwargs)
+    def ln_prob(self, sample, axis=None, normalized=True):
+        """Joint ordinary/flow prior density in physical parameter coordinates.
+
+        Flows over the same parameters form a weighted mixture, as in sample();
+        groups over disjoint parameters contribute independent factors. A joint
+        flow must be evaluated with all of its parameters present.
+        """
+        self._sync_prior_dict()
+        flow_keys = {
+            k for k in sample if isinstance(self[k], str) and self[k] == "flow"
+        }
+        if not flow_keys:
+            return self._prior_dict.ln_prob(sample, axis=axis, normalized=normalized)
+        if axis not in (None, 0):
+            raise ValueError("Joint NF prior evaluation supports axis=0 or axis=None.")
+
+        arrays = np.broadcast_arrays(*[np.asarray(v) for _, v in sample.items()])
+        sample = dict(zip(sample.keys(), arrays))
+        groups = {}
+        for flow in self.flows:
+            parameters = frozenset(flow.parameters)
+            if parameters & flow_keys:
+                if not parameters <= flow_keys:
+                    raise ValueError(
+                        "A joint NF prior requires all its parameters: "
+                        f"{sorted(parameters)}. Missing or replaced: "
+                        f"{sorted(parameters - flow_keys)}."
+                    )
+                groups.setdefault(parameters, []).append(flow)
+        covered = set().union(*groups)
+        if covered != flow_keys:
+            raise ValueError(
+                f"No NF model is registered for {sorted(flow_keys - covered)}."
+            )
+
+        ordinary = {k: v for k, v in sample.items() if k not in flow_keys}
+        log_prob = np.zeros(arrays[0].shape)
+        if ordinary:
+            log_prob += self._prior_dict.ln_prob(
+                ordinary, axis=0, normalized=normalized
+            )
+        for flows in groups.values():
+            if len(flows) == 1:
+                log_prob += flows[0].ln_prob(sample)
+                continue
+            weights = np.array([flow.weight for flow in flows], dtype=float)
+            if not np.all(np.isfinite(weights) & (weights >= 0)) or weights.sum() <= 0:
+                raise ValueError(
+                    "NF mixture weights must be finite, nonnegative, and sum to > 0."
+                )
+            components = [
+                flow.ln_prob(sample) + np.log(weight / weights.sum())
+                for flow, weight in zip(flows, weights)
+                if weight > 0
+            ]
+            log_prob += logsumexp(components, axis=0)
+        log_prob = np.where(
+            self._prior_dict.evaluate_constraints(sample), log_prob, -np.inf
+        )
+        return log_prob.sum() if axis is None else log_prob
+
+    def evaluate_constraints(self, sample):
+        """Evaluate constraints using the current, possibly updated, priors."""
+        self._sync_prior_dict()
+        return self._prior_dict.evaluate_constraints(sample)
+
+    def _sync_prior_dict(self):
+        # Result removes absent angles and restores their priors after recovery.
+        # It also updates priors before importance sampling. Those dict mutations
+        # must reach the delegate, including its constraint-normalization cache.
+        if self.keys() != self._prior_dict.keys() or any(
+            value is not self._prior_dict[key] for key, value in self.items()
+        ):
+            self._prior_dict = BBHPriorDict(
+                dict(self), conversion_function=self.conversion_function
+            )
 
 
 class BBHExtrinsicPriorDict(DingoGWPrior):

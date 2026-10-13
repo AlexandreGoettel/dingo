@@ -2,25 +2,19 @@ import numpy as np
 from bilby.gw.detector import InterferometerList
 from torchvision.transforms import Compose
 
-from dingo.gw.noise.asd_dataset import ASDDataset
-from dingo.gw.domains import (
-    UniformFrequencyDomain,
-    MultibandedFrequencyDomain,
-)
-from dingo.gw.domains import build_domain, build_domain_from_model_metadata
+from dingo.gw.domains import (MultibandedFrequencyDomain,
+                              UniformFrequencyDomain, build_domain,
+                              build_domain_from_model_metadata)
 from dingo.gw.gwutils import get_extrinsic_prior_dict
-from dingo.gw.prior import build_prior_with_defaults, split_off_extrinsic_parameters
-from dingo.gw.transforms import (
-    GetDetectorTimes,
-    ProjectOntoDetectors,
-    WhitenAndScaleStrain,
-    SampleCalibrationParameters,
-    ApplyCalibrationToWaveform,
-)
+from dingo.gw.noise.asd_dataset import ASDDataset
+from dingo.gw.prior import (build_prior_with_defaults,
+                            split_off_extrinsic_parameters)
+from dingo.gw.transforms import (ApplyCalibrationToWaveform, GetDetectorTimes,
+                                 ProjectOntoDetectors,
+                                 SampleCalibrationParameters,
+                                 WhitenAndScaleStrain)
 from dingo.gw.waveform_generator.waveform_generator import (
-    WaveformGenerator,
-    NewInterfaceWaveformGenerator,
-)
+    NewInterfaceWaveformGenerator, WaveformGenerator)
 
 
 class GWSignal(object):
@@ -226,7 +220,7 @@ class GWSignal(object):
     # namely storing ASDs from numpy arrays, from ASDDatasets, loading from files,
     # etc. For now this functionality is partially implemented here.
 
-    def signal_m(self, theta):
+    def signal_m(self, theta, psis=None):
         """
         Compute the GW signal for parameters theta. Same as self.signal(theta) method,
         but it does not sum the contributions of the individual modes, and instead
@@ -242,6 +236,10 @@ class GWSignal(object):
         theta: dict
             Signal parameters. Includes intrinsic parameters to be passed to waveform
             generator, and extrinsic parameters for detector projection.
+        psis: sequence of float, optional
+            If supplied, project each mode at these polarization angles and return
+            {m: {ifo: strain}} with strain shape (len(psis), n_freq). Otherwise
+            retain the usual sample dictionaries at theta["psi"].
 
         Returns
         -------
@@ -269,6 +267,11 @@ class GWSignal(object):
         }
 
         # Step 2: project m-contributions to h_plus and h_cross onto detectors
+        if psis is not None:
+            return {
+                m: self._project_at_psis(theta_intrinsic, theta_extrinsic, pol, psis)
+                for m, pol in pol_m.items()
+            }
         sample_out = {}
         for m, pol in pol_m.items():
             sample = {
@@ -281,6 +284,32 @@ class GWSignal(object):
             sample_out[m] = self.projection_transforms(sample)
 
         return sample_out
+
+    def signal_psis(self, theta, psis):
+        """Project one waveform at several psi values; return {ifo: (n_psi, n_freq)}."""
+        theta_intrinsic, theta_extrinsic = split_off_extrinsic_parameters(theta)
+        theta_intrinsic = {k: float(v) for k, v in theta_intrinsic.items()}
+        polarizations = self.waveform_generator.generate_hplus_hcross(theta_intrinsic)
+        polarizations = {
+            k: self.data_domain.update_data(v) for k, v in polarizations.items()
+        }
+        return self._project_at_psis(
+            theta_intrinsic, theta_extrinsic, polarizations, psis
+        )
+
+    def _project_at_psis(self, theta_intrinsic, theta_extrinsic, polarizations, psis):
+        projected = []
+        asd = self.asd
+        for psi in psis:
+            sample = {
+                "parameters": theta_intrinsic.copy(),
+                "extrinsic_parameters": {**theta_extrinsic, "psi": psi},
+                "waveform": {k: v.copy() for k, v in polarizations.items()},
+            }
+            if asd is not None:
+                sample["asds"] = asd
+            projected.append(self.projection_transforms(sample)["waveform"])
+        return {ifo: np.stack([p[ifo] for p in projected]) for ifo in projected[0]}
 
     @property
     def asd(self):

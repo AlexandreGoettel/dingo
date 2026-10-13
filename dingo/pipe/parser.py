@@ -4,19 +4,12 @@
 
 import argparse
 
-import configargparse
-from packaging import version
-
 import bilby_pipe
+import configargparse
 from bilby_pipe.bilbyargparser import BilbyArgParser
-from bilby_pipe.utils import (
-    ENVIRONMENT_DEFAULTS,
-    get_version_information,
-    logger,
-    nonefloat,
-    noneint,
-    nonestr,
-)
+from bilby_pipe.utils import (ENVIRONMENT_DEFAULTS, get_version_information,
+                              logger, nonefloat, noneint, nonestr)
+from packaging import version
 
 logger.name = "dingo_pipe"
 
@@ -407,7 +400,10 @@ def create_parser(top_level=True, usage=None):
     # Mutually exclusive: --psd-dict / --asd-dataset
     if _BILBY_PIPE_V1_8:
         det_parser.add(
-            "--psd-dict", type=nonestr, default=None, help="Dictionary of PSD files to use"
+            "--psd-dict",
+            type=nonestr,
+            default=None,
+            help="Dictionary of PSD files to use",
         )
         det_parser.add(
             "--asd-dataset",
@@ -419,7 +415,10 @@ def create_parser(top_level=True, usage=None):
     else:
         psd_dict_parser = det_parser.add_mutually_exclusive_group()
         psd_dict_parser.add(
-            "--psd-dict", type=nonestr, default=None, help="Dictionary of PSD files to use"
+            "--psd-dict",
+            type=nonestr,
+            default=None,
+            help="Dictionary of PSD files to use",
         )
         psd_dict_parser.add(
             "--asd-dataset",
@@ -1253,7 +1252,9 @@ def create_parser(top_level=True, usage=None):
     )
     # Mutually exclusive: --prior-file / --prior-dict
     if _BILBY_PIPE_V1_8:
-        prior_parser.add("--prior-file", type=nonestr, default=None, help="The prior file")
+        prior_parser.add(
+            "--prior-file", type=nonestr, default=None, help="The prior file"
+        )
         prior_parser.add(
             "--prior-dict",
             type=nonestr,
@@ -1268,7 +1269,9 @@ def create_parser(top_level=True, usage=None):
         )
     else:
         prior_parser_main = prior_parser.add_mutually_exclusive_group()
-        prior_parser_main.add("--prior-file", type=nonestr, default=None, help="The prior file")
+        prior_parser_main.add(
+            "--prior-file", type=nonestr, default=None, help="The prior file"
+        )
         prior_parser_main.add(
             "--prior-dict",
             type=nonestr,
@@ -1577,8 +1580,10 @@ def create_parser(top_level=True, usage=None):
         default="Default",
         help=(
             "Dictionary of importance-sampling-settings to pass in, e.g., "
-            "{synthetic_phase: {approximation_22_mode: False, (...)}} OR pass"
-            "pre-defined set of density-recovery-settings {PhaseRecoveryDefault}"
+            "{synthetic_parameters: {n_grid_phase: 512, n_grid_psi: 128, "
+            "approximation_22_mode: False}, add_glitch: True}, or a preset: "
+            "PhaseRecoveryDefault or PhasePsiRecoveryDefault. Default selects "
+            "recovery for the missing angles. Legacy synthetic_phase is supported."
         ),
     )
     sampler_parser.add(

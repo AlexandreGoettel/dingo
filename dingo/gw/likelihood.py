@@ -1,28 +1,23 @@
+from collections import defaultdict
 from multiprocessing import Pool
 from typing import Optional
 
 import numpy as np
 import pandas as pd
+from bilby.gw.utils import ln_i0
 from scipy.fft import fft
 from scipy.special import logsumexp
-from bilby.gw.utils import ln_i0
 from threadpoolctl import threadpool_limits
 
 from dingo.core.likelihood import Likelihood
+from dingo.gw.data.data_preparation import get_event_data_and_domain
+from dingo.gw.domains import (Domain, MultibandedFrequencyDomain,
+                              UniformFrequencyDomain, build_domain)
 from dingo.gw.injection import GWSignal
-from dingo.gw.transforms import (
-    DecimateWaveformsAndASDS,
-    create_mask_based_on_frequency_update,
-)
+from dingo.gw.transforms import (DecimateWaveformsAndASDS,
+                                 create_mask_based_on_frequency_update)
 from dingo.gw.transforms.glitch_transforms import AddAntiglitch
 from dingo.gw.waveform_generator import WaveformGenerator
-from dingo.gw.domains import (
-    Domain,
-    UniformFrequencyDomain,
-    MultibandedFrequencyDomain,
-)
-from dingo.gw.domains import build_domain
-from dingo.gw.data.data_preparation import get_event_data_and_domain
 
 
 class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
@@ -100,6 +95,7 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
         # This means that we only have to modify the ASD to apply frequency masking to
         # importance sampling.
         asds = event_data["asds"]
+        self.frequency_masks = None
         if frequency_update is not None:
             # Get frequency masks for full domain
             sample_frequencies = data_domain.sample_frequencies
@@ -113,6 +109,7 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
                 minimum_frequency=frequency_update.get("minimum_frequency", None),
                 maximum_frequency=frequency_update.get("maximum_frequency", None),
             )
+            self.frequency_masks = frequency_masks
             asds = {
                 ifo: np.where(mask, asds[ifo], 1.0)
                 for ifo, mask in frequency_masks.items()
@@ -475,6 +472,120 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
         # print(log_likelihoods[idx] - log_likelihood_ref)
 
         return log_likelihoods
+
+    def _check_phase_grid_supported(self):
+        if self.phase_marginalization or self.time_marginalization:
+            raise ValueError("Angle recovery requires an unmarginalized likelihood.")
+        if self.calibration_marginalization_kwargs:
+            raise ValueError(
+                "Angle recovery requires fixed calibration parameters, not "
+                "calibration marginalization."
+            )
+
+    def _phase_grid_data(self, theta):
+        """Data and constant likelihood term, optionally after subtracting a glitch."""
+        return self.whitened_strains, self.log_Zn
+
+    def phase_psi_terms_22(self, theta):
+        """Overlaps at phase zero and psi = (0, pi/4) for the (2,2) proposal.
+
+        Returns d_inner_h (2,), h_inner_h (2,2), and scalar log_Zn. Only the
+        GW waveform rotates with either angle; any glitch is held fixed.
+        """
+        self._check_phase_grid_supported()
+        mu = self.signal_psis({**theta, "phase": 0.0}, (0.0, np.pi / 4))
+        d, log_Zn = self._phase_grid_data(theta)
+        return {
+            "d_inner_h": sum(np.inner(d[ifo].conj(), h) for ifo, h in mu.items()),
+            "h_inner_h": sum(np.inner(h.conj(), h).real for h in mu.values()),
+            "log_Zn": log_Zn,
+        }
+
+    def terms_22_at_psi(self, terms, psis):
+        """Combine basis overlaps at psi of shape (H,) or (N,H) for stacked terms."""
+        psis = np.asarray(psis)
+        w = np.stack([np.cos(2 * psis), np.sin(2 * psis)], axis=-1)
+        return {
+            "d_inner_h": np.einsum("...b,...hb->...h", terms["d_inner_h"], w),
+            "h_inner_h": np.einsum("...bc,...hb,...hc->...h", terms["h_inner_h"], w, w),
+            "log_Zn": np.asarray(terms["log_Zn"])[..., None],
+        }
+
+    def log_likelihood_22_from_terms(self, terms, phases):
+        """Evaluate fixed-psi (2,2) terms, adding a final axis for phase points."""
+        return (
+            np.asarray(terms["log_Zn"])[..., None]
+            + (
+                np.asarray(terms["d_inner_h"])[..., None]
+                * np.exp(2j * np.asarray(phases))
+            ).real
+            - np.asarray(terms["h_inner_h"])[..., None] / 2
+        )
+
+    def phase_grid_terms(self, theta):
+        """Precompute mode overlaps at psi = (0, pi/4) for any phase/psi grid.
+
+        The existing mode decomposition requires spin_conversion_phase=0.
+        Mode orders m_vals and differences deltas are shared between samples;
+        all other values may be stacked on a leading sample axis. Shapes are
+        kappa2_modes (2,M), rho2opt_const (2,2), rho2opt_crossterms (2,2,P),
+        and scalar log_Zn, including a fixed glitch's contribution if present.
+        """
+        self._check_phase_grid_supported()
+        if self.waveform_generator.spin_conversion_phase != 0:
+            raise ValueError(
+                "The mode-sum phase grid requires spin_conversion_phase=0. "
+                "Use approximation_22_mode=True for a proposal without the mode sum."
+            )
+        mu = self.signal_m({**theta, "phase": 0.0}, (0.0, np.pi / 4))
+        d, log_Zn = self._phase_grid_data(theta)
+        m_vals = sorted(mu)
+
+        def overlap(x, y):
+            return sum(np.inner(x[ifo].conj(), y[ifo]) for ifo in x)
+
+        rho2opt_const = sum(overlap(mu[m], mu[m]).real for m in m_vals)
+        cross = defaultdict(lambda: np.zeros((2, 2), dtype=complex))
+        for i, m in enumerate(m_vals):
+            for n in m_vals[i + 1 :]:
+                pair = overlap(mu[m], mu[n])
+                cross[n - m] += pair + pair.T
+        deltas = sorted(cross)
+        return {
+            "m_vals": np.asarray(m_vals),
+            "deltas": np.asarray(deltas),
+            "kappa2_modes": np.stack([overlap(d, mu[m]) for m in m_vals], axis=-1),
+            "rho2opt_const": rho2opt_const,
+            "rho2opt_crossterms": (
+                np.stack([cross[delta] for delta in deltas], axis=-1)
+                if deltas
+                else np.empty((2, 2, 0), dtype=complex)
+            ),
+            "log_Zn": log_Zn,
+        }
+
+    def log_likelihood_from_phase_grid_terms(self, terms, phases, psis):
+        """Evaluate overlaps on angle grids, returning (G,H) or (N,G,H).
+
+        phases and psis have shapes (G,), (H,) for shared grids or (N,G),
+        (N,H) for per-sample points. No waveform evaluations are needed.
+        """
+        phases, psis = np.asarray(phases), np.asarray(psis)
+        w = np.stack([np.cos(2 * psis), np.sin(2 * psis)], axis=-1)
+        phasor_m = np.exp(-1j * terms["m_vals"][:, None] * phases[..., None, :])
+        phasor_delta = np.exp(-1j * terms["deltas"][:, None] * phases[..., None, :])
+        kappa2_b = np.einsum("...bm,...mg->...bg", terms["kappa2_modes"], phasor_m).real
+        rho2opt_bc = (
+            np.asarray(terms["rho2opt_const"])[..., None]
+            + np.einsum(
+                "...bcp,...pg->...bcg", terms["rho2opt_crossterms"], phasor_delta
+            ).real
+        )
+        kappa2 = np.einsum("...bg,...hb->...gh", kappa2_b, w, optimize=True)
+        rho2opt = np.einsum(
+            "...bcg,...hb,...hc->...gh", rho2opt_bc, w, w, optimize=True
+        )
+        return np.asarray(terms["log_Zn"])[..., None, None] + kappa2 - rho2opt / 2
 
     def _log_likelihood_phase_marginalized(self, theta):
         """
@@ -849,7 +960,6 @@ def get_wfg(wfg_kwargs, data_domain, frequency_range=None):
         return WaveformGenerator(domain=data_domain, **wfg_kwargs)
 
 
-
 class AntiglitchGWLikelihood(StationaryGaussianGWLikelihood):
     """
     GW likelihood with a glitch included in the signal model.
@@ -883,22 +993,48 @@ class AntiglitchGWLikelihood(StationaryGaussianGWLikelihood):
         """
         # Get base GW signal
         signal_dict = super().signal(theta)
+        glitch = self._glitch_signal(theta)
+        for ifo, h in signal_dict["waveform"].items():
+            h += glitch[ifo]
+        return signal_dict
 
-        ifos = list(signal_dict["waveform"].keys())
-        for ifo in ifos:
+    def _glitch_signal(self, theta):
+        """Generate the fixed, whitened glitch using the direct signal convention."""
+        glitch = {
+            ifo: np.zeros(len(self.data_domain), dtype=complex)
+            for ifo in self.whitened_strains
+        }
+        for ifo in glitch:
             if not AddAntiglitch.ifo_has_glitch_parameters(ifo, theta):
                 continue
-
-            # Add glitch to waveform using the same domain as the signal
             AddAntiglitch.add_glitch_to_waveform(
-                waveform=signal_dict["waveform"],
+                waveform=glitch,
                 domain=self.data_domain,
                 params=theta,
                 ifo=ifo,
                 colour=False,  # Data is already whitened in the likelihood
             )
+            if self.frequency_masks is not None:
+                glitch[ifo] = np.where(self.frequency_masks[ifo], glitch[ifo], 0.0)
+        return glitch
 
-        return signal_dict
+    def _phase_grid_data(self, theta):
+        glitch = self._glitch_signal(theta)
+        residual = {ifo: d - glitch[ifo] for ifo, d in self.whitened_strains.items()}
+        return residual, -0.5 * sum(inner_product(d, d) for d in residual.values())
+
+    def _log_likelihood_phase_grid_mode_decomposed(self, theta, phases=None):
+        if phases is None:
+            phases = self.phase_grid
+        return self.log_likelihood_from_phase_grid_terms(
+            self.phase_grid_terms(theta), phases, [theta["psi"]]
+        )[:, 0]
+
+    def _d_inner_h_complex(self, theta):
+        # The phase proposal rotates only the GW signal, keeping the glitch fixed.
+        mu = super().signal(theta)["waveform"]
+        d, _ = self._phase_grid_data(theta)
+        return sum(inner_product_complex(d[ifo], h) for ifo, h in mu.items())
 
 
 def main():

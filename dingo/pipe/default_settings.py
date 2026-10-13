@@ -44,6 +44,14 @@ IMPORTANCE_SAMPLING_SETTINGS = {
             "uniform_weight": 0.01,
         },
     },
+    "PhasePsiRecoveryDefault": {
+        "synthetic_parameters": {
+            "approximation_22_mode": False,
+            "n_grid_phase": 512,
+            "n_grid_psi": 128,
+            "uniform_weight": 0.01,
+        },
+    },
     "MultibandingDefault": {
         "use_base_domain": True,
     },

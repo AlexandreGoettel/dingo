@@ -4,24 +4,23 @@ from typing import Optional
 
 import numpy as np
 import yaml
-from bilby.core.prior import Uniform, Constraint, PriorDict, DeltaFunction
+from bilby.core.prior import Constraint, DeltaFunction, PriorDict, Uniform
 from bilby.gw.prior import CalibrationPriorDict
 from bilby_pipe.utils import CALIBRATION_CORRECTION_TYPE_LOOKUP
 
-from dingo.core.density import (
-    interpolated_sample_and_log_prob_multi,
-    interpolated_log_prob_multi,
-)
+from dingo.core.density import (interpolated_log_prob_multi,
+                                interpolated_sample_and_log_prob_multi)
 from dingo.core.multiprocessing import apply_func_with_multiprocessing
 from dingo.core.result import Result as CoreResult
-from dingo.gw.conversion import change_spin_conversion_phase
-from dingo.gw.domains import MultibandedFrequencyDomain
-from dingo.gw.domains import build_domain
-from dingo.gw.gwutils import get_extrinsic_prior_dict
-from dingo.gw.likelihood import StationaryGaussianGWLikelihood, AntiglitchGWLikelihood
-from dingo.gw.prior import build_prior_with_defaults
 from dingo.core.utils.backward_compatibility import check_minimum_version
-
+from dingo.gw.conversion import change_spin_conversion_phase
+from dingo.gw.domains import MultibandedFrequencyDomain, build_domain
+from dingo.gw.gwutils import get_extrinsic_prior_dict
+from dingo.gw.inference.synthetic_parameters import (
+    PhasePsiProposal, normalize_synthetic_settings)
+from dingo.gw.likelihood import (AntiglitchGWLikelihood,
+                                 StationaryGaussianGWLikelihood)
+from dingo.gw.prior import build_prior_with_defaults
 
 RANDOM_STATE = 150914
 
@@ -78,6 +77,24 @@ class Result(CoreResult):
     @synthetic_phase_kwargs.setter
     def synthetic_phase_kwargs(self, value):
         self.importance_sampling_metadata["synthetic_phase"] = value
+
+    @property
+    def synthetic_parameters_kwargs(self):
+        return self.importance_sampling_metadata.get("synthetic_parameters")
+
+    @synthetic_parameters_kwargs.setter
+    def synthetic_parameters_kwargs(self, value):
+        self.importance_sampling_metadata["synthetic_parameters"] = value
+
+    @property
+    def add_glitch(self):
+        return self.importance_sampling_metadata.get("add_glitch", False)
+
+    @add_glitch.setter
+    def add_glitch(self, value):
+        if not isinstance(value, (bool, np.bool_)):
+            raise ValueError("add_glitch must be a bool.")
+        self.importance_sampling_metadata["add_glitch"] = bool(value)
 
     @property
     def time_marginalization_kwargs(self):
@@ -236,6 +253,10 @@ class Result(CoreResult):
             self.phase_prior = self.prior.pop("phase")
         else:
             self.phase_prior = None
+        if "psi" in self.prior and "psi" not in self.samples:
+            self.psi_prior = self.prior.pop("psi")
+        else:
+            self.psi_prior = None
 
     def update_prior(self, prior_update):
         """
@@ -264,12 +285,14 @@ class Result(CoreResult):
             # Save old prior evaluations.
             log_prior_old = self.prior.ln_prob(theta, axis=0)
 
-        # Update the prior itself, careful to split off geocent_time and phase priors
+        # Update the prior itself, careful to split off geocent_time and angle priors
         # if necessary.
         if self.geocent_time_prior is not None and "geocent_time" in prior_update:
             self.geocent_time_prior = prior_update.pop("geocent_time")
         if self.phase_prior is not None and "phase" in prior_update:
             self.phase_prior = prior_update.pop("phase")
+        if self.psi_prior is not None and "psi" in prior_update:
+            self.psi_prior = prior_update.pop("psi")
         self.prior.update(
             prior_update
         )  # TODO: Does this update cached constraint ratio?
@@ -297,7 +320,7 @@ class Result(CoreResult):
         phase_marginalization_kwargs: Optional[dict] = None,
         calibration_marginalization_kwargs: Optional[dict] = None,
         phase_grid: Optional[np.ndarray] = None,
-        add_glitch: Optional[bool] = False,
+        add_glitch: Optional[bool] = None,
     ):
         """
         Build the likelihood function based on model metadata. This is called at the
@@ -315,6 +338,7 @@ class Result(CoreResult):
             Calibration marginalization parameters. If None, no calibration marginalization is used.
         add_glitch: bool
             If True, use AntiglitchGWLikelihood instead of StationaryGaussianGWLikelihood.
+            If omitted, reuse the setting saved with the result.
         """
         if time_marginalization_kwargs is not None:
             if self.geocent_time_prior is None:
@@ -330,6 +354,11 @@ class Result(CoreResult):
             time_marginalization_kwargs["t_upper"] = self.geocent_time_prior.maximum
 
         if phase_marginalization_kwargs is not None:
+            if self.psi_prior is not None:
+                raise ValueError(
+                    "Phase marginalization cannot recover missing psi; "
+                    "use synthetic_parameters."
+                )
             # check that phase prior is uniform [0, 2pi)
             if not (
                 isinstance(self.phase_prior, Uniform)
@@ -368,6 +397,8 @@ class Result(CoreResult):
                 wfg_domain_dict["delta_f"] = delta_f_new
         wfg_domain = build_domain(wfg_domain_dict)
 
+        if add_glitch is None:
+            add_glitch = self.add_glitch
         if add_glitch:
             likelihood = AntiglitchGWLikelihood
         else:
@@ -389,6 +420,7 @@ class Result(CoreResult):
                 maximum_frequency=self.maximum_frequency,
             ),
         )
+        self.add_glitch = add_glitch
 
     def sample_calibration_parameters(self, calibration_sampling_kwargs: dict):
         """
@@ -423,13 +455,18 @@ class Result(CoreResult):
         self.calibration_sampling_kwargs = calibration_sampling_kwargs
 
         # Handle correction_type defaults
-        correction_type = self.calibration_sampling_kwargs.get("correction_type", "data")
+        correction_type = self.calibration_sampling_kwargs.get(
+            "correction_type", "data"
+        )
         if correction_type is None:
             correction_type_dict = {
-                ifo: CALIBRATION_CORRECTION_TYPE_LOOKUP[ifo] for ifo in self.interferometers
+                ifo: CALIBRATION_CORRECTION_TYPE_LOOKUP[ifo]
+                for ifo in self.interferometers
             }
         elif correction_type == "data" or correction_type == "template":
-            correction_type_dict = {ifo: correction_type for ifo in self.interferometers}
+            correction_type_dict = {
+                ifo: correction_type for ifo in self.interferometers
+            }
         elif isinstance(correction_type, dict):
             correction_type_dict = correction_type
         else:
@@ -448,7 +485,7 @@ class Result(CoreResult):
             )
 
         # Removing the delta function priors on the frequency nodes, amplitude and phase.
-        # Usually the frequency nodes are set to delta functions, but we also remove the 
+        # Usually the frequency nodes are set to delta functions, but we also remove the
         # the amplitude and phase delta functions if present.
         # This avoids large log probs and log priors, since the density of a delta function
         # at the sampled point is infinite. The delta functions do not affect the sampling,
@@ -465,9 +502,9 @@ class Result(CoreResult):
         delta_log_prob = np.zeros(num_samples)
 
         # Here we will sample the calibration parameters from the prior.
-        # We treat the *prior as the proposal* distribution and 
-        # therefore add the log_prob of the sampled calibration parameters 
-        # to the existing log_prob. We also will update the prior 
+        # We treat the *prior as the proposal* distribution and
+        # therefore add the log_prob of the sampled calibration parameters
+        # to the existing log_prob. We also will update the prior
         # to include the calibration priors using the importance_sampling_metadata
         prior_update = self.importance_sampling_metadata.get("prior_update", {})
         for ifo, prior in calibration_priors.items():
@@ -493,6 +530,94 @@ class Result(CoreResult):
 
         # Rebuild the prior (which will include calibration priors from prior_update)
         self._build_prior()
+
+    def _validate_synthetic_parameters(self, settings, require_log_prob=True):
+        if self.samples is None or (
+            require_log_prob and "log_prob" not in self.samples
+        ):
+            raise ValueError(
+                "Synthetic parameter recovery requires samples with log_prob."
+            )
+        if "phase" in self.samples:
+            raise ValueError(
+                "Synthetic recovery requires missing phase; "
+                "existing angles are not overwritten."
+            )
+        joint = "psi" not in self.samples
+        settings = normalize_synthetic_settings(settings, joint=joint)
+        for name, maximum in (("phase", 2 * np.pi), ("psi", np.pi)):
+            if name == "psi" and not joint:
+                continue
+            prior = getattr(self, f"{name}_prior")
+            if not (
+                isinstance(prior, Uniform)
+                and np.isclose(prior.minimum, 0)
+                and np.isclose(prior.maximum, maximum)
+            ):
+                raise ValueError(
+                    f"Synthetic {name} requires a uniform prior on [0, {maximum})."
+                )
+        if self.geocent_time_prior is not None:
+            raise ValueError("Synthetic angle recovery requires sampled geocent_time.")
+        return settings
+
+    def sample_synthetic_parameters(self, settings):
+        """Recover missing phase, or phase and psi together, before importance sampling.
+
+        Settings: n_grid_phase (512 joint / 5001 phase-only), n_grid_psi (128),
+        approximation_22_mode (False), uniform_weight (0.01), num_processes (1),
+        and optional add_glitch (saved for subsequent importance sampling).
+        The legacy n_grid spelling is also accepted. Higher modes use the
+        existing decomposition and require spin_conversion_phase=0. The (2,2)
+        option approximates the proposal; the target likelihood is still direct.
+        """
+        settings = self._validate_synthetic_parameters(settings)
+        joint = "psi" not in self.samples
+        if not joint:
+            legacy = {
+                k: settings[k]
+                for k in ("approximation_22_mode", "uniform_weight", "num_processes")
+            }
+            legacy["n_grid"] = settings["n_grid_phase"]
+            self.add_glitch = settings.get("add_glitch", self.add_glitch)
+            self.sample_synthetic_phase(legacy)
+            self.synthetic_parameters_kwargs = settings
+            return
+
+        param_keys = [k for k, v in self.prior.items() if not isinstance(v, Constraint)]
+        theta = self.samples[param_keys].copy()
+        valid = np.zeros(len(theta), dtype=bool)
+        if len(theta):
+            log_prior = self.prior.ln_prob(theta[self.search_parameter_keys], axis=0)
+            constraints = self.prior.evaluate_constraints(
+                {k: theta[k].to_numpy() for k in theta}
+            )
+            valid = np.isfinite(log_prior) & (np.asarray(constraints) != 0)
+        # Invalid rows have zero target weight; use a uniform angle proposal there
+        # without attempting a waveform, keeping a well-defined proposal density.
+        phase = np.zeros(len(theta))
+        psi = np.zeros(len(theta))
+        delta_log_prob = np.full(len(theta), -np.log(2 * np.pi * np.pi))
+        if valid.any():
+            self._build_likelihood(add_glitch=settings.get("add_glitch"))
+            proposal = PhasePsiProposal(self.likelihood, theta.loc[valid], **settings)
+            phase[valid], psi[valid], delta_log_prob[valid] = (
+                proposal.sample_and_log_prob()
+            )
+        if (~valid).any():
+            from bilby.core.utils import random
+
+            phase[~valid] = random.rng.uniform(0, 2 * np.pi, size=np.sum(~valid))
+            psi[~valid] = random.rng.uniform(0, np.pi, size=np.sum(~valid))
+        self.samples["phase"] = phase
+        self.samples["psi"] = psi
+        self.samples["log_prob"] += delta_log_prob
+        for name in ("phase", "psi"):
+            self.prior[name] = getattr(self, f"{name}_prior")
+            setattr(self, f"{name}_prior", None)
+        self.add_glitch = settings.get("add_glitch", self.add_glitch)
+        self.synthetic_parameters_kwargs = settings
+        self.likelihood = None
 
     def sample_synthetic_phase(
         self,
@@ -577,6 +702,17 @@ class Result(CoreResult):
 
         # Put a cap on the number of processes to avoid overhead:
         num_valid_samples = np.sum(within_prior)
+        if num_valid_samples == 0:
+            if inverse:
+                self.samples["log_prob"] = np.nan
+                del self.samples["phase"]
+            else:
+                self.samples["phase"] = 0.0
+                self.samples["log_prob"] = np.nan
+                self.prior["phase"] = self.phase_prior
+                self.phase_prior = None
+                self.likelihood = None
+            return
         num_processes = min(
             self.synthetic_phase_kwargs.get("num_processes", 1), num_valid_samples // 10
         )
@@ -700,7 +836,9 @@ class Result(CoreResult):
             num_processes=num_processes,
         )
 
-    def get_pesummary_samples(self, num_processes=1, resampling_method="clip+rejection"):
+    def get_pesummary_samples(
+        self, num_processes=1, resampling_method="clip+rejection"
+    ):
         """Samples in a form suitable for PESummary.
 
         These samples are adjusted to undo certain conventions used internally by

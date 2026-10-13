@@ -1,25 +1,21 @@
 #!/usr/bin/env python
-""" Script to importance sample based on Dingo samples. Based on bilby_pipe data
-analysis script. """
+"""Script to importance sample based on Dingo samples. Based on bilby_pipe data
+analysis script."""
 import os
 import sys
+from copy import deepcopy
 
 import yaml
 from bilby_pipe.input import Input
-from bilby_pipe.utils import (
-    parse_args,
-    logger,
-    convert_string_to_dict,
-    convert_prior_string_input,
-    resolve_filename_with_transfer_fallback,
-    BilbyPipeError,
-)
+from bilby_pipe.utils import (BilbyPipeError, convert_prior_string_input,
+                              convert_string_to_dict, logger, parse_args,
+                              resolve_filename_with_transfer_fallback)
 
 from dingo.gw.data.event_dataset import EventDataset
 from dingo.gw.domains import MultibandedFrequencyDomain
+from dingo.gw.result import Result
 from dingo.pipe.default_settings import IMPORTANCE_SAMPLING_SETTINGS
 from dingo.pipe.parser import create_parser
-from dingo.gw.result import Result
 
 logger.name = "dingo_pipe"
 
@@ -127,7 +123,10 @@ class ImportanceSamplingInput(Input):
 
     @property
     def calibration_marginalization_kwargs(self):
-        if self.calibration_model == "CubicSpline" and self.calibration_mode == "marginalize":
+        if (
+            self.calibration_model == "CubicSpline"
+            and self.calibration_mode == "marginalize"
+        ):
             return {
                 "calibration_envelope": {
                     ifo: resolve_filename_with_transfer_fallback(path)
@@ -137,7 +136,10 @@ class ImportanceSamplingInput(Input):
                 "num_calibration_curves": self.spline_calibration_curves,
                 "correction_type": self.calibration_correction_type,
             }
-        elif self.calibration_model is None or self.calibration_mode in ["sample", None]:
+        elif self.calibration_model is None or self.calibration_mode in [
+            "sample",
+            None,
+        ]:
             return None
         else:
             raise ValueError(
@@ -152,9 +154,14 @@ class ImportanceSamplingInput(Input):
     def importance_sampling_settings(self, settings):
         # Set up defaults.
         if "phase" not in self.result.samples.columns:
-            self._importance_sampling_settings = IMPORTANCE_SAMPLING_SETTINGS[
+            default = (
                 "PhaseRecoveryDefault"
-            ]
+                if "psi" in self.result.samples
+                else "PhasePsiRecoveryDefault"
+            )
+            self._importance_sampling_settings = deepcopy(
+                IMPORTANCE_SAMPLING_SETTINGS[default]
+            )
         else:
             self._importance_sampling_settings = dict()
 
@@ -166,15 +173,43 @@ class ImportanceSamplingInput(Input):
         if settings is not None:
             if settings.lower() == "default":
                 pass
-            elif settings.lower() == "phaserecoverydefault":
+            elif settings.lower() in (
+                "phaserecoverydefault",
+                "phasepsirecoverydefault",
+            ):
+                name = (
+                    "PhaseRecoveryDefault"
+                    if settings.lower() == "phaserecoverydefault"
+                    else "PhasePsiRecoveryDefault"
+                )
+                self._importance_sampling_settings.pop("synthetic_phase", None)
+                self._importance_sampling_settings.pop("synthetic_parameters", None)
                 self._importance_sampling_settings.update(
-                    IMPORTANCE_SAMPLING_SETTINGS["PhaseRecoveryDefault"]
+                    deepcopy(IMPORTANCE_SAMPLING_SETTINGS[name])
                 )
             else:
-                self._importance_sampling_settings.update(
-                    convert_string_to_dict(settings)
-                )
+                updates = convert_string_to_dict(settings)
+                if "synthetic_phase" in updates and "synthetic_parameters" in updates:
+                    raise ValueError(
+                        "Specify only one of synthetic_phase and synthetic_parameters."
+                    )
+                for key, other in (
+                    ("synthetic_phase", "synthetic_parameters"),
+                    ("synthetic_parameters", "synthetic_phase"),
+                ):
+                    if key in updates:
+                        self._importance_sampling_settings.pop(other, None)
+                self._importance_sampling_settings.update(updates)
             if "phase_marginalization" in self._importance_sampling_settings:
+                if "psi" not in self.result.samples:
+                    raise ValueError(
+                        "Missing psi requires synthetic_parameters, "
+                        "not phase marginalization."
+                    )
+                if "synthetic_parameters" in self._importance_sampling_settings:
+                    raise ValueError(
+                        "Synthetic recovery and phase marginalization cannot be combined."
+                    )
                 self._importance_sampling_settings.pop("synthetic_phase", None)
         else:
             self._importance_sampling_settings = dict()
@@ -197,9 +232,25 @@ class ImportanceSamplingInput(Input):
                 )
 
     def run_sampler(self):
+        recovery = self.importance_sampling_settings.get("synthetic_parameters")
+        if recovery is not None and any(
+            self.importance_sampling_settings.get(key) is not None
+            for key in ("time_marginalization", "phase_marginalization")
+        ):
+            raise ValueError(
+                "Synthetic recovery cannot be combined with time or phase marginalization."
+            )
         self.result.use_base_domain = self.importance_sampling_settings.get(
             "use_base_domain", False
         )
+        if "add_glitch" in self.importance_sampling_settings:
+            add_glitch = self.importance_sampling_settings["add_glitch"]
+            if (
+                recovery is not None
+                and recovery.get("add_glitch", add_glitch) != add_glitch
+            ):
+                raise ValueError("Conflicting add_glitch settings.")
+            self.result.add_glitch = add_glitch
 
         if self.prior_dict_updates:
             logger.info("Updating prior from network prior. Changes:")
@@ -211,6 +262,10 @@ class ImportanceSamplingInput(Input):
                 )
             )
             self.result.update_prior(self.prior_dict_updates)
+
+        if recovery is not None:
+            recovery = {**recovery, "num_processes": self.request_cpus}
+            self.result._validate_synthetic_parameters(recovery)
 
         if "synthetic_phase" in self.importance_sampling_settings:
             logger.info("Sampling synthetic phase.")
@@ -225,6 +280,10 @@ class ImportanceSamplingInput(Input):
             self.result.sample_calibration_parameters(
                 self.importance_sampling_settings["calibration_sampling_settings"]
             )
+
+        if recovery is not None:
+            logger.info("Sampling synthetic phase and, when missing, psi.")
+            self.result.sample_synthetic_parameters(recovery)
 
         self.result.importance_sample(
             num_processes=self.request_cpus,
