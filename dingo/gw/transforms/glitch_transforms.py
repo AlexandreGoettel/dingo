@@ -125,7 +125,10 @@ class ScaleWaveformLog(object):
 
 
 class AddAntiglitch(object):
-    """Adds analytic glitches based on doi.org/10.1103/PhysRevD.108.122004."""
+    """Add analytic glitches with times relative to CBC geocent_time.
+
+    Based on doi.org/10.1103/PhysRevD.108.122004.
+    """
 
     param_map = {
         "glitch_amp": "amp",
@@ -190,8 +193,7 @@ class AddAntiglitch(object):
         waveform : dict
             Dictionary of waveforms, modified in place.
         domain : UniformFrequencyDomain
-        glitch_params : dict
-            Dictionary containing glitch parameters
+        params : dict
         ifo : str
             Interferometer name.
         colour : bool
@@ -205,7 +207,7 @@ class AddAntiglitch(object):
             glitch_params[v] = params[f"{ifo}_{k}"]
 
         # Make glitch time relative to geocent_time
-        glitch_params["t0"] += params["geocent_time"]
+        glitch_params["t0"] = glitch_params["t0"] + params["geocent_time"]
 
         # Get analytical glitch
         glitch = antiglitch_model(
