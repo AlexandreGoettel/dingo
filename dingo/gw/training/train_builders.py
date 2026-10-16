@@ -15,6 +15,9 @@ from dingo.gw.noise.asd_dataset import ASDDataset
 from dingo.gw.prior import default_inference_parameters
 from dingo.gw.SVD import SVDBasis
 from dingo.gw.transforms import (
+    AddAntiglitch,
+    ClipWaveform,
+    ScaleWaveformLog,
     AddWhiteNoiseComplex,
     CropMaskStrainRandom,
     GetDetectorTimes,
@@ -191,7 +194,7 @@ def set_train_transforms(
         if print_output:
             print("Calculating new parameter standardizations.")
         standardization_dict = get_standardization_dict(
-            extrinsic_prior_dict,
+            transforms[0].prior,
             wfd,
             data_settings["inference_parameters"] + data_settings["context_parameters"],
             torchvision.transforms.Compose(transforms),
@@ -205,6 +208,19 @@ def set_train_transforms(
     # off with zero_noise option in data_settings.
     if not data_settings.get("zero_noise", False):
         transforms.append(AddWhiteNoiseComplex())
+    if any("_glitch_" in p for p in transforms[0].prior):
+        if (
+            chirp_prior_conditioning_settings(data_settings) is not None
+            or "gnpe_time_shifts" in data_settings
+        ):
+            raise NotImplementedError(
+                "AntiGlitch training with GNPE time shifts or chirp heterodyning is not supported."
+            )
+        transforms.append(AddAntiglitch(domain))
+    if "waveform_log_scale" in data_settings:
+        transforms.append(ScaleWaveformLog(**data_settings["waveform_log_scale"]))
+    if "waveform_clip" in data_settings:
+        transforms.append(ClipWaveform(data_settings["waveform_clip"]))
     transforms.append(
         SelectStandardizeRepackageParameters(
             {
@@ -318,7 +334,11 @@ def build_svd_for_embedding_network(
     torch.multiprocessing.set_sharing_strategy("file_system")
 
     # Fix the luminosity distance to a standard value, just in order to generate the SVD.
-    data_settings["extrinsic_prior"]["luminosity_distance"] = "100.0"
+    if not any(
+        isinstance(p, dict) and "luminosity_distance" in p.get("parameters", [])
+        for p in data_settings["extrinsic_prior"].values()
+    ):
+        data_settings["extrinsic_prior"]["luminosity_distance"] = "100.0"
 
     # Build the dataset, but with certain transforms omitted. In particular, we want to
     # build the SVD based on zero-noise waveforms. They should still be whitened, and
@@ -333,7 +353,8 @@ def build_svd_for_embedding_network(
             SelectStandardizeRepackageParameters,
             UnpackDict,
             CropMaskStrainRandom,
-        ],
+        ]
+        + ([AddAntiglitch] if data_settings.get("glitchless_svd", False) else []),
     )
 
     print("Generating waveforms for embedding network SVD initialization.")

@@ -5,11 +5,15 @@ from bilby.gw.conversion import (
     fill_from_fixed_priors,
     convert_to_lal_binary_black_hole_parameters,
 )
-from bilby.core.prior import Uniform, Sine, Cosine
+from bilby.core.prior import Uniform, Sine, Cosine, Prior
 
 import numpy as np
 from typing import Dict, Set, Any
 import warnings
+
+from scipy.special import logsumexp
+
+from dingo.gw.nf_prior import NFPrior
 
 # Silence INFO and WARNING messages from bilby
 import logging
@@ -17,7 +21,153 @@ import logging
 logging.getLogger("bilby").setLevel("ERROR")
 
 
-class BBHExtrinsicPriorDict(BBHPriorDict):
+class DingoGWPrior(BBHPriorDict):
+    """Bilby priors plus joint normalising-flow priors.
+
+    Dictionary entries describing flows use ``model_filename``, ``parameters``,
+    ``weight`` and optional ``bounds``. Flows with the same parameter set form a
+    mixture; disjoint sets are independent. Bilby's constraint sampling and
+    normalization operate on the joint draws through ``sample_subset``.
+    """
+
+    def __init__(self, dictionary=None, device="cpu", **kwargs):
+        if dictionary is None or isinstance(dictionary, str):
+            dictionary = BBHPriorDict(dictionary, filename=kwargs.pop("filename", None))
+        if isinstance(dictionary, DingoGWPrior):
+            dictionary = dictionary.to_config()
+        dictionary = dict(dictionary or {})
+        self.flows = []
+        self._flow_settings = {}
+        self._flow_priors = {}
+        for name, settings in list(dictionary.items()):
+            if not isinstance(settings, dict):
+                continue
+            flow = NFPrior(device=device, **settings)
+            self.flows.append(flow)
+            self._flow_settings[name] = deepcopy(settings)
+            del dictionary[name]
+        for flow in self.flows:
+            for other in self.flows:
+                a, b = set(flow.parameters), set(other.parameters)
+                if a != b and a & b:
+                    raise ValueError("NF parameter sets must be identical or disjoint.")
+            for parameter in flow.parameters:
+                # A Prior marker lets Bilby classify flow parameters as non-fixed.
+                self._flow_priors.setdefault(parameter, Prior(name=parameter))
+        dictionary.update(self._flow_priors)
+        super().__init__(dictionary, **kwargs)
+        self._normalization_priors = dict(self)
+        for flows in self._flow_groups().values():
+            total_weight = sum(f.weight for f in flows)
+            if not np.isfinite(total_weight) or total_weight <= 0:
+                raise ValueError(
+                    "NF mixture weights must sum to a finite positive value."
+                )
+
+    def _flow_groups(self):
+        """Return active flow groups, rejecting partial replacement of a joint prior."""
+        groups = {}
+        for flow in self.flows:
+            active = [p for p in flow.parameters if self.get(p) is self._flow_priors[p]]
+            if active and len(active) != len(flow.parameters):
+                raise ValueError(
+                    f"A joint NF prior must be retained or replaced as a whole: {flow.parameters}."
+                )
+            if active:
+                groups.setdefault(frozenset(active), []).append(flow)
+        return groups
+
+    def sample_subset(self, keys=(), size=None):
+        """Draw whole joint samples, then select the requested parameters."""
+        keys = list(keys)
+        groups = self._flow_groups()
+        flow_keys = set().union(*groups)
+        samples = super().sample_subset([k for k in keys if k not in flow_keys], size)
+        shape = () if size is None else (size,) if np.isscalar(size) else tuple(size)
+        count = int(np.prod(shape))
+        for parameters, flows in groups.items():
+            selected = parameters.intersection(keys)
+            if not selected:
+                continue
+            weights = np.array([f.weight for f in flows])
+            choices = np.random.choice(len(flows), count, p=weights / weights.sum())
+            values = {p: np.empty(count) for p in selected}
+            for index, flow in enumerate(flows):
+                mask = choices == index
+                if mask.any():
+                    draws = flow.sample(int(mask.sum()))
+                    for p in selected:
+                        values[p][mask] = draws[:, flow.parameters.index(p)]
+            samples.update(
+                {p: v.reshape(shape) if shape else v.item() for p, v in values.items()}
+            )
+        return samples
+
+    def ln_prob(self, sample, axis=None, normalized=True):
+        """Evaluate joint densities in physical units, including mixture weights."""
+        if self.keys() != self._normalization_priors.keys() or any(
+            self[k] is not p for k, p in self._normalization_priors.items()
+        ):
+            self._cached_normalizations.clear()
+            self._normalization_priors = dict(self)
+        groups = self._flow_groups()
+        if not groups:
+            return super().ln_prob(sample, axis=axis, normalized=normalized)
+        if axis not in (None, 0):
+            raise ValueError("Joint NF prior evaluation supports axis=0 or axis=None.")
+        sample = {k: np.asarray(v) for k, v in sample.items()}
+        flow_keys = set().union(*groups)
+        factors = [self[k].ln_prob(v) for k, v in sample.items() if k not in flow_keys]
+        for parameters, flows in groups.items():
+            if not parameters.intersection(sample):
+                continue
+            if not parameters.issubset(sample):
+                raise ValueError(
+                    f"Joint NF density requires all parameters {sorted(parameters)}."
+                )
+            weight_sum = sum(f.weight for f in flows)
+            factors.append(
+                logsumexp(
+                    [
+                        f.ln_prob(sample) + np.log(f.weight / weight_sum)
+                        for f in flows
+                        if f.weight > 0
+                    ],
+                    axis=0,
+                )
+            )
+        log_prob = np.sum(np.broadcast_arrays(*factors), axis=0)
+        log_prob = self.check_ln_prob(sample, log_prob, normalized=normalized)
+        return np.sum(log_prob) if axis is None else log_prob
+
+    def prob(self, sample, **kwargs):
+        """Probability corresponding to the joint log density."""
+        return np.exp(self.ln_prob(sample, **kwargs))
+
+    def copy(self):
+        """Preserve the joint models and their markers when copying a prior."""
+        return deepcopy(self)
+
+    def to_config(self):
+        """Serialize joint prior definitions rather than Bilby's parameter markers."""
+        active = set().union(*self._flow_groups())
+        return {
+            **{k: v for k, v in self.items() if k not in active},
+            **{
+                name: deepcopy(settings)
+                for name, settings in self._flow_settings.items()
+                if set(settings["parameters"]).issubset(active)
+            },
+        }
+
+    def sample_as_df(self, num_samples, **kwargs):
+        """Return joint prior draws as a parameter table."""
+        import pandas as pd
+
+        return pd.DataFrame(self.sample(num_samples, **kwargs))
+
+
+class BBHExtrinsicPriorDict(DingoGWPrior):
     """
     This class is the same as BBHPriorDict except that it does not require mass parameters.
 
@@ -74,14 +224,14 @@ class BBHExtrinsicPriorDict(BBHPriorDict):
                     std[key] = np.sqrt((p.maximum - p.minimum) ** 2.0 / 12.0).item()
                 elif isinstance(p, Sine) and p.minimum == 0.0 and p.maximum == np.pi:
                     mean[key] = np.pi / 2.0
-                    std[key] = np.sqrt(0.25 * (np.pi**2) - 2).item()
+                    std[key] = np.sqrt(0.25 * (np.pi ** 2) - 2).item()
                 elif (
                     isinstance(p, Cosine)
                     and p.minimum == -np.pi / 2
                     and p.maximum == np.pi / 2
                 ):
                     mean[key] = 0.0
-                    std[key] = np.sqrt(0.25 * (np.pi**2) - 2).item()
+                    std[key] = np.sqrt(0.25 * (np.pi ** 2) - 2).item()
                 else:
                     estimation_keys.append(key)
         else:
@@ -168,7 +318,7 @@ def build_prior_with_defaults(prior_settings: Dict[str, str]):
         if v == "default":
             full_prior_settings[k] = default_intrinsic_dict[k]
 
-    return BBHPriorDict(full_prior_settings)
+    return DingoGWPrior(full_prior_settings)
 
 
 def split_off_extrinsic_parameters(theta):
@@ -192,7 +342,7 @@ def split_off_extrinsic_parameters(theta):
     theta_intrinsic = {}
     theta_extrinsic = {}
     for k, v in theta.items():
-        if k in extrinsic_parameters or "recalib" in k:
+        if k in extrinsic_parameters or "recalib" in k or "_glitch_" in k:
             theta_extrinsic[k] = v
         else:
             theta_intrinsic[k] = v

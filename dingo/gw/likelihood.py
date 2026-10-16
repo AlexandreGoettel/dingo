@@ -10,6 +10,7 @@ from bilby.gw.utils import ln_i0
 from dingo.core.likelihood import Likelihood
 from dingo.gw.injection import GWSignal
 from dingo.gw.transforms import (
+    AddAntiglitch,
     DecimateWaveformsAndASDS,
     create_mask_based_on_frequency_update,
 )
@@ -21,6 +22,7 @@ from dingo.gw.domains import (
 )
 from dingo.gw.domains import build_domain
 from dingo.gw.data.data_preparation import get_event_data_and_domain
+from dingo.gw.noise.asd_dataset import HIGH_ASD_VALUE
 
 
 class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
@@ -98,6 +100,7 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
         # This means that we only have to modify the ASD to apply frequency masking to
         # importance sampling.
         asds = event_data["asds"]
+        self.frequency_masks = None
         if frequency_update is not None:
             # Get frequency masks for full domain
             sample_frequencies = data_domain.sample_frequencies
@@ -111,6 +114,7 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
                 minimum_frequency=frequency_update.get("minimum_frequency", None),
                 maximum_frequency=frequency_update.get("maximum_frequency", None),
             )
+            self.frequency_masks = frequency_masks
             asds = {
                 ifo: np.where(mask, asds[ifo], 1.0)
                 for ifo, mask in frequency_masks.items()
@@ -411,9 +415,10 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
             d_inner_h: complex, (d, h_0); h_inner_h: float, (h_0, h_0).
         """
         self._check_phase_grid_supported()
-        mu = self.signal({**theta, "phase": 0.0})["waveform"]
-        d = self.whitened_strains
+        mu = self._phase_grid_signal({**theta, "phase": 0.0})["waveform"]
+        d, log_Zn = self._phase_grid_data(theta)
         return {
+            "log_Zn": log_Zn,
             "d_inner_h": sum(
                 inner_product_complex(d_ifo, mu_ifo)
                 for d_ifo, mu_ifo in zip(d.values(), mu.values())
@@ -446,7 +451,7 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
         d_inner_h = np.asarray(terms["d_inner_h"])[..., None]
         h_inner_h = np.asarray(terms["h_inner_h"])[..., None]
         return (
-            self.log_Zn
+            np.asarray(terms.get("log_Zn", self.log_Zn))[..., None]
             + (d_inner_h * np.exp(2j * np.asarray(phases))).real
             - h_inner_h / 2
         )
@@ -480,8 +485,9 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
                 {**theta, "phase": 0.0}, (0.0, np.pi / 4)
             ).items()
         }
-        d = self.whitened_strains
+        d, log_Zn = self._phase_grid_data(theta)
         return {
+            "log_Zn": log_Zn,
             "d_inner_h": sum(
                 inner_product_complex(d[ifo][:, None], mu[ifo]) for ifo in mu
             ),
@@ -513,6 +519,12 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
         psis = np.asarray(psis)
         w = np.stack([np.cos(2 * psis), np.sin(2 * psis)], axis=-1)
         return {
+            "log_Zn": np.broadcast_to(
+                np.asarray(terms.get("log_Zn", self.log_Zn))[..., None],
+                np.broadcast_shapes(
+                    np.shape(terms["d_inner_h"])[:-1] + (1,), psis.shape
+                ),
+            ),
             "d_inner_h": np.einsum("...b,...hb->...h", terms["d_inner_h"], w),
             "h_inner_h": np.einsum("...bc,...hb,...hc->...h", terms["h_inner_h"], w, w),
         }
@@ -565,7 +577,7 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
                 f"got {self.waveform_generator.spin_conversion_phase}.{hint}"
             )
 
-        d = self.whitened_strains
+        d, log_Zn = self._phase_grid_data(theta)
 
         # Step 1: Compute signal for phase = 0, separated into the m-contributions from
         # the individual modes, projected at each basis polarization angle.
@@ -627,6 +639,7 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
         kappa2_modes = np.array([overlap(d, mu[m]) for m in m_vals]).T
 
         return {
+            "log_Zn": log_Zn,
             "m_vals": np.array(m_vals),
             "kappa2_modes": kappa2_modes,
             "rho2opt_const": rho2opt_const,
@@ -687,8 +700,20 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
         rho2opt = np.einsum(
             "...bcg,...hb,...hc->...gh", rho2opt_bc, w, w, optimize=True
         )
-        log_likelihood = self.log_Zn + kappa2 - 0.5 * rho2opt
+        log_likelihood = (
+            np.asarray(terms.get("log_Zn", self.log_Zn))[..., None, None]
+            + kappa2
+            - 0.5 * rho2opt
+        )
         return log_likelihood
+
+    def _phase_grid_data(self, theta):
+        """Data and noise term for rotating only the GW signal with phase/psi."""
+        return self.whitened_strains, self.log_Zn
+
+    def _phase_grid_signal(self, theta):
+        """The part of the signal that rotates with the binary's phase."""
+        return self.signal(theta)
 
     def _log_likelihood_phase_marginalized(self, theta):
         """
@@ -708,8 +733,8 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
             # Step 1: Compute whitened GW strain mu(theta) for parameters theta.
             # The phase parameter needs to be set to 0.
             theta["phase"] = 0.0
-            mu = self.signal(theta)["waveform"]
-            d = self.whitened_strains
+            mu = self._phase_grid_signal(theta)["waveform"]
+            d, log_Zn = self._phase_grid_data(theta)
 
             # Step 2: Compute likelihood. log_Zn is precomputed, so we only need to
             # compute the remaining terms rho2opt and kappa2
@@ -727,7 +752,7 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
                     for d_ifo, mu_ifo in zip(d.values(), mu.values())
                 ]
             )
-            log_likelihood = self.log_Zn + ln_i0(np.abs(kappa2C)) - 1 / 2.0 * rho2opt
+            log_likelihood = log_Zn + ln_i0(np.abs(kappa2C)) - 1 / 2.0 * rho2opt
 
             if self.return_aux_snr:
                 # Phase-maximized matched-filter SNR: |kappa2C| / sqrt(rho2opt).
@@ -895,6 +920,86 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
             inner_product_complex(d_ifo, mu_ifo)
             for d_ifo, mu_ifo in zip(d.values(), mu.values())
         )
+
+
+class AntiglitchGWLikelihood(StationaryGaussianGWLikelihood):
+    """Gaussian likelihood for GW + AntiGlitch, with glitches fixed under phase/psi."""
+
+    def __init__(
+        self,
+        wfg_kwargs,
+        wfg_domain,
+        data_domain,
+        event_data,
+        glitch_domain=None,
+        **kwargs,
+    ):
+        """Retain ASD masks and the training grid defining glitch amplitudes.
+
+        glitch_domain defaults to data_domain for standalone likelihoods.
+        """
+        if (
+            kwargs.get("time_marginalization_kwargs") is not None
+            and kwargs.get("phase_marginalization_kwargs") is not None
+        ):
+            raise NotImplementedError(
+                "AntiGlitch does not support joint analytic time/phase marginalization; infer time explicitly."
+            )
+        self._glitch_frequency_masks = {
+            ifo: np.isfinite(asd) & (asd < 0.5 * HIGH_ASD_VALUE)
+            for ifo, asd in event_data["asds"].items()
+        }
+        reference = glitch_domain if glitch_domain is not None else data_domain
+        self._glitch_domain = getattr(reference, "base_domain", reference)
+        super().__init__(wfg_kwargs, wfg_domain, data_domain, event_data, **kwargs)
+
+    def signal(self, theta):
+        """Add the same whitened glitch used by the training transform."""
+        signal = super().signal(theta)
+        for ifo, glitch in self._glitch_signal(theta).items():
+            signal["waveform"][ifo] = signal["waveform"][ifo] + glitch
+        return signal
+
+    def _glitch_signal(self, theta):
+        """Add glitches before applying event notches, decimation and range masks."""
+        base = getattr(self.data_domain, "base_domain", self.data_domain)
+        glitch = {
+            ifo: np.zeros(len(base), dtype=complex) for ifo in self.whitened_strains
+        }
+        for ifo in glitch:
+            if AddAntiglitch.ifo_has_glitch_parameters(ifo, theta):
+                AddAntiglitch.add_glitch_to_waveform(
+                    glitch,
+                    base,
+                    theta,
+                    ifo,
+                    normalization_domain=self._glitch_domain,
+                )
+            mask = self._glitch_frequency_masks[ifo]
+            if len(mask) == len(base):
+                glitch[ifo] = np.where(mask, glitch[ifo], 0.0)
+            if isinstance(self.data_domain, MultibandedFrequencyDomain):
+                glitch[ifo] = (
+                    self.data_domain.decimate(glitch[ifo])
+                    * base.noise_std
+                    / self.data_domain.noise_std
+                )
+            # Event data may already have been decimated before construction.
+            if len(mask) == len(self.data_domain):
+                glitch[ifo] = np.where(mask, glitch[ifo], 0.0)
+            if self.frequency_masks is not None:
+                glitch[ifo] = np.where(self.frequency_masks[ifo], glitch[ifo], 0.0)
+        return glitch
+
+    def _phase_grid_signal(self, theta):
+        """Only the GW signal rotates with the binary phase."""
+        return super().signal(theta)
+
+    def _phase_grid_data(self, theta):
+        """Subtract the fixed glitch, retaining its parameter-dependent noise term."""
+        glitch = self._glitch_signal(theta)
+        residual = {ifo: d - glitch[ifo] for ifo, d in self.whitened_strains.items()}
+        return residual, -0.5 * sum(inner_product(d, d) for d in residual.values())
 
 
 def inner_product(a, b, min_idx=0, delta_f=None, psd=None):

@@ -25,7 +25,7 @@ from bilby_pipe.utils import (
 
 from .dag_creator import generate_dag
 from .parser import create_parser
-from .utils import dict_to_string
+from .utils import dict_to_string, parse_prior_dict_with_flows
 
 from ..gw.domains.build_domain import build_domain_from_model_metadata
 from ..gw.gwutils import add_defaults_for_missing_detectors, parse_psd_notch_dict
@@ -112,7 +112,7 @@ def fill_in_arguments_from_model(args, perform_arg_checks=True):
         ],
         "deltaT": deltaT,
         "Toffset": Toffset,
-        "prior_dict": dict_to_string(prior),
+        "prior_dict": dict_to_string(prior.to_config()),
         "model_reference_time": model_metadata["train_settings"]["data"]["ref_time"],
     }
 
@@ -289,6 +289,11 @@ def _outside(requested, bound, pick):
 
 
 class MainInput(BilbyMainInput):
+    @Input.prior_dict.setter
+    def prior_dict(self, value):
+        """Preserve nested flow settings when reading the completed INI file."""
+        Input.prior_dict.fset(self, parse_prior_dict_with_flows(value))
+
     def __init__(
         self, args, unknown_args, importance_sampling_updates, perform_checks=True
     ):
@@ -372,7 +377,7 @@ class MainInput(BilbyMainInput):
         # self.phase_marginalization = args.phase_marginalization
         self.prior_file = None  # Dingo update. To change prior use the prior_dict.
         self.prior_dict = args.prior_dict
-        self.default_prior = "BBHPriorDict"
+        self.default_prior = "dingo.gw.prior.DingoGWPrior"
         self.minimum_frequency = args.minimum_frequency
         self.enforce_signal_duration = args.enforce_signal_duration
 
@@ -617,7 +622,7 @@ class MainInput(BilbyMainInput):
                 prior_file=self.prior_file,
                 prior_dict=self._get_priors(
                     add_time=False
-                ),  # ensure prior-dict-updates incorporated
+                ).to_config(),  # ensure prior-dict-updates incorporated
                 n_injection=n_injection,
                 trigger_time=trigger_time_injections,
                 deltaT=self.deltaT,

@@ -28,9 +28,11 @@ from dingo.gw.frequency_updates import (
     resolve_frequency_bounds,
 )
 from dingo.gw.gwutils import get_extrinsic_prior_dict
-from dingo.gw.likelihood import StationaryGaussianGWLikelihood
+from dingo.gw.likelihood import StationaryGaussianGWLikelihood, AntiglitchGWLikelihood
 from dingo.gw.prior import build_prior_with_defaults
 from dingo.gw.transforms import (
+    ClipWaveform,
+    ScaleWaveformLog,
     DecimateWaveformsAndASDS,
     chirp_prior_conditioning_settings,
     HeterodynePhase,
@@ -267,6 +269,10 @@ class GWSamplerContext:
             )
         # Whiten and scale (the network expects standardized data).
         transforms.append(WhitenAndScaleStrain(domain.noise_std))
+        if "waveform_log_scale" in data_settings:
+            transforms.append(ScaleWaveformLog(**data_settings["waveform_log_scale"]))
+        if "waveform_clip" in data_settings:
+            transforms.append(ClipWaveform(data_settings["waveform_clip"]))
         # Event frequency-range update, expanded over the analyzed detectors (a
         # triangular detector's arms are keyed by arm name). The request is
         # validated against the training license the first time prepared_data()
@@ -693,7 +699,21 @@ class GWSamplerContext:
             maximum_frequency={d: f_max for d, (_, f_max) in bounds.items()},
         )
 
-        likelihood = StationaryGaussianGWLikelihood(
+        prior_settings = {
+            **dataset_settings.get("intrinsic_prior", {}),
+            **self.model_metadata["train_settings"]["data"].get("extrinsic_prior", {}),
+        }
+        prior_parameters = [
+            p
+            for name, setting in prior_settings.items()
+            for p in (setting["parameters"] if isinstance(setting, dict) else [name])
+        ]
+        likelihood_class = StationaryGaussianGWLikelihood
+        likelihood_kwargs = {}
+        if any("_glitch_" in p for p in prior_parameters):
+            likelihood_class = AntiglitchGWLikelihood
+            likelihood_kwargs["glitch_domain"] = network
+        likelihood = likelihood_class(
             wfg_kwargs={
                 **dataset_settings["waveform_generator"],
                 **(wfg_updates or {}),
@@ -707,6 +727,7 @@ class GWSamplerContext:
             calibration_marginalization_kwargs=calibration_marginalization_kwargs,
             use_base_domain=use_base_domain,
             frequency_update=frequency_update,
+            **likelihood_kwargs,
         )
         self._likelihood = likelihood
         self._likelihood_settings = settings

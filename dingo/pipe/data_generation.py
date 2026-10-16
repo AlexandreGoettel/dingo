@@ -26,11 +26,17 @@ from dingo.gw.injection import Injection
 from dingo.gw.gwutils import detect_asd_notches, parse_psd_notch_dict
 from dingo.gw.noise.asd_dataset import HIGH_ASD_VALUE
 from dingo.pipe.parser import create_parser
+from dingo.pipe.utils import parse_prior_dict_with_flows
 
 logger.name = "dingo_pipe"
 
 
 class DataGenerationInput(BilbyDataGenerationInput):
+    @Input.prior_dict.setter
+    def prior_dict(self, value):
+        """Preserve nested flow settings when reading the completed INI file."""
+        Input.prior_dict.fset(self, parse_prior_dict_with_flows(value))
+
     def __init__(self, args, unknown_args, create_data=True):
         self.model = resolve_filename_with_transfer_fallback(args.model) or args.model
         self.model_init = args.model_init and (
@@ -69,7 +75,7 @@ class DataGenerationInput(BilbyDataGenerationInput):
         # self.time_reference = "geocent" # DINGO mod used for saving data dump
         # self.phase_marginalization = args.phase_marginalization
         self.prior_dict = args.prior_dict
-        self.default_prior = "BBHPriorDict"
+        self.default_prior = "dingo.gw.prior.DingoGWPrior"
         self.time_reference = "geocent"
         self.prior_dict_updates = args.prior_dict_updates
 
@@ -330,6 +336,13 @@ class DataGenerationInput(BilbyDataGenerationInput):
         self.injection_parameters = self.injection_df.iloc[self.idx].to_dict()
         theta = self.injection_parameters.copy()
         theta["geocent_time"] -= self.trigger_time
+        if any("_glitch_" in p for p in theta):
+            injection.asd = {
+                ifo.name: ifo.power_spectral_density.get_amplitude_spectral_density_array(
+                    injection.data_domain.sample_frequencies
+                )
+                for ifo in self.interferometers
+            }
         signal = injection.signal(theta)
 
         # Add signal to interferometer data

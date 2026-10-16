@@ -12,6 +12,7 @@ from dingo.gw.frequency_updates import resolve_frequency_bounds
 from dingo.gw.gwutils import get_extrinsic_prior_dict
 from dingo.gw.prior import build_prior_with_defaults, split_off_extrinsic_parameters
 from dingo.gw.transforms import (
+    AddAntiglitch,
     GetDetectorTimes,
     ProjectOntoDetectors,
     WhitenAndScaleStrain,
@@ -394,6 +395,12 @@ class Injection(GWSignal):
         """
         super().__init__(**gwsignal_kwargs)
         self.prior = prior
+
+    def signal(self, theta):
+        """Generate GW and optional AntiGlitch signals in the same whitening convention."""
+        signal = super().signal(theta)
+        signal["parameters"].update({k: v for k, v in theta.items() if "_glitch_" in k})
+        return AddAntiglitch(self.data_domain, colour=not self.whiten)(signal)
 
     @classmethod
     def from_posterior_model_metadata(cls, metadata):

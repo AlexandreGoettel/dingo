@@ -101,7 +101,11 @@ def get_standardization_dict(
     # Some of the extrinsic prior parameters have analytic means and standard
     # deviations. If possible, this will either get these, or else it will estimate
     # them numerically.
-    ext_prior = BBHExtrinsicPriorDict(extrinsic_prior_dict)
+    ext_prior = (
+        extrinsic_prior_dict
+        if isinstance(extrinsic_prior_dict, BBHExtrinsicPriorDict)
+        else BBHExtrinsicPriorDict(extrinsic_prior_dict)
+    )
     mean_extrinsic, std_extrinsic = ext_prior.mean_std(ext_prior.keys())
 
     # Check that overlap between intrinsic and extrinsic parameters is only
@@ -126,14 +130,19 @@ def get_standardization_dict(
     if additional_parameters:
         num_samples = min(100_000, len(wfd.parameters))
         samples = {p: np.empty(num_samples) for p in additional_parameters}
-        for n in range(num_samples):
-            sample = {"parameters": wfd.parameters.iloc[n].to_dict()}
+        for start in range(0, num_samples, 4096):
+            stop = min(start + 4096, num_samples)
+            sample = {
+                "parameters": {
+                    k: v.to_numpy() for k, v in wfd.parameters.iloc[start:stop].items()
+                }
+            }
             sample = transform(sample)
             for p in additional_parameters:
                 # This assumes all of the additional parameters are contained within
                 # extrinsic_parameters. We have set it up so this is the case for the
                 # GNPE proxies and the detector coalescence times.
-                samples[p][n] = sample["extrinsic_parameters"][p]
+                samples[p][start:stop] = sample["extrinsic_parameters"][p]
         mean_additional = {p: np.mean(samples[p]).item() for p in additional_parameters}
         std_additional = {p: np.std(samples[p]).item() for p in additional_parameters}
 

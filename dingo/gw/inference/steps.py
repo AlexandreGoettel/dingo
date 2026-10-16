@@ -65,7 +65,8 @@ def _stacked_phase_grid_terms(likelihood, theta, num_processes):
         "deltas": terms_per_sample[0]["deltas"],
         **{
             k: np.array([t[k] for t in terms_per_sample])
-            for k in ("kappa2_modes", "rho2opt_const", "rho2opt_crossterms")
+            for k in ("kappa2_modes", "rho2opt_const", "rho2opt_crossterms", "log_Zn")
+            if k in terms_per_sample[0]
         },
     }
 
@@ -357,7 +358,8 @@ class SyntheticPhaseFactor(Factor):
         )
         return {
             k: np.array([t[k] for t in terms_per_sample])
-            for k in ("d_inner_h", "h_inner_h")
+            for k in ("d_inner_h", "h_inner_h", "log_Zn")
+            if k in terms_per_sample[0]
         }
 
 
@@ -606,7 +608,13 @@ class SyntheticPhasePsiFactor(Factor):
                     **terms,
                     **{
                         k: terms[k][sl]
-                        for k in ("kappa2_modes", "rho2opt_const", "rho2opt_crossterms")
+                        for k in (
+                            "kappa2_modes",
+                            "rho2opt_const",
+                            "rho2opt_crossterms",
+                            "log_Zn",
+                        )
+                        if k in terms
                     },
                 },
                 phases,
@@ -652,7 +660,8 @@ class SyntheticPhasePsiFactor(Factor):
         )
         terms = {
             k: np.array([t[k] for t in terms_per_sample])
-            for k in ("d_inner_h", "h_inner_h")
+            for k in ("d_inner_h", "h_inner_h", "log_Zn")
+            if k in terms_per_sample[0]
         }
         psis = np.linspace(0, np.pi, self.n_grid_psi)
         terms_on_grid = likelihood.terms_22_at_psi(terms, psis)
