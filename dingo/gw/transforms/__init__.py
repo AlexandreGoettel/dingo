@@ -15,3 +15,4 @@ from .tokenization_transforms import (
     NormalizePosition,
     MaskTokensForFrequencyRangeUpdate,
 )
+from .compression_transforms import DenoisingTransforms
