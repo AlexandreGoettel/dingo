@@ -96,11 +96,14 @@ def train(
     model: DenseResidualAutoencoder,
     train_loader: DataLoader,
     test_loader: DataLoader,
-    training_settings: dict,
+    train_settings: dict,
     train_dir: str,
     local_settings: dict,
+    *,
+    dataset_settings: dict,
 ) -> None:
-    """Train once from scratch and record training and validation MSE per epoch."""
+    """Record per-epoch MSE and save the model whenever validation MSE improves."""
+    training_settings = train_settings["training"]
     epochs = training_settings["epochs"]
     if not isinstance(epochs, int) or epochs < 1:
         raise ValueError("training.epochs must be a positive integer.")
@@ -124,6 +127,7 @@ def train(
     )
 
     os.makedirs(train_dir, exist_ok=True)
+    best_validation_loss = float("inf")
     with open(os.path.join(train_dir, "history.txt"), "w", newline="") as f:
         writer = csv.writer(f)
         for epoch in range(1, epochs + 1):
@@ -149,6 +153,19 @@ def train(
                 perform_scheduler_step(scheduler, validation_loss)
             writer.writerow([train_loss, validation_loss])
             f.flush()
+            if validation_loss < best_validation_loss:
+                torch.save(
+                    {
+                        "model_kwargs": train_settings["model"],
+                        "model_state_dict": model.state_dict(),
+                        "train_settings": train_settings,
+                        "dataset_settings": dataset_settings,
+                        "epoch": epoch,
+                        "validation_loss": validation_loss,
+                    },
+                    os.path.join(train_dir, "model_latest.pt"),
+                )
+                best_validation_loss = validation_loss
             print(
                 f"Epoch {epoch}/{epochs}: training MSE = {train_loss:.6g}, "
                 f"validation MSE = {validation_loss:.6g}"
@@ -207,19 +224,10 @@ def run_training(
             model,
             train_loader,
             test_loader,
-            training_settings,
+            train_settings,
             train_dir,
             local_settings,
-        )
-        torch.save(
-            {
-                "model_kwargs": model_kwargs,
-                "model_state_dict": model.state_dict(),
-                "train_settings": train_settings,
-                "dataset_settings": wfd.settings,
-                "epoch": training_settings["epochs"],
-            },
-            os.path.join(train_dir, "autoencoder.pt"),
+            dataset_settings=wfd.settings,
         )
 
 
@@ -235,7 +243,7 @@ def train_local():
         yaml.dump(local_settings, f, default_flow_style=False, sort_keys=False)
 
     run_training(train_settings, local_settings, args.train_dir)
-    print("Compression training complete. Saved autoencoder.pt and history.txt.")
+    print("Compression training complete. Best model: model_latest.pt; losses: history.txt.")
 
 
 if __name__ == "__main__":
