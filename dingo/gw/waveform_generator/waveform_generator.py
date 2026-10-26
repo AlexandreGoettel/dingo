@@ -8,6 +8,7 @@ from typing import Dict, List, Tuple, Union, Callable
 from numbers import Number
 import warnings
 import pandas as pd
+from tqdm.auto import tqdm
 
 import lal
 import lalsimulation as LS
@@ -1915,17 +1916,27 @@ def generate_waveforms_parallel(
     polarizations:
         A dictionary of all generated polarizations stacked together
     """
-    # logger.info('Generating waveform polarizations ...')
-
     task_func = partial(
         generate_waveforms_task_func, waveform_generator=waveform_generator
     )
     task_data = parameter_samples.iterrows()
 
     if pool is not None:
-        polarizations_list = pool.map(task_func, task_data)
+        # Match Pool.map's default batching to avoid serializing the generator
+        # for every waveform. Ordered imap preserves alignment with parameters.
+        num_batches = 4 * pool._processes
+        chunksize = max(1, (len(parameter_samples) + num_batches - 1) // num_batches)
+        results = pool.imap(task_func, task_data, chunksize=chunksize)
     else:
-        polarizations_list = list(map(task_func, task_data))
+        results = map(task_func, task_data)
+    polarizations_list = list(
+        tqdm(
+            results,
+            total=len(parameter_samples),
+            desc="Generating waveforms",
+            unit="waveform",
+        )
+    )
     polarizations = {
         pol: np.stack([wf[pol] for wf in polarizations_list])
         for pol in polarizations_list[0].keys()

@@ -124,9 +124,8 @@ def train(
     )
 
     os.makedirs(train_dir, exist_ok=True)
-    with open(os.path.join(train_dir, "history.csv"), "w", newline="") as f:
+    with open(os.path.join(train_dir, "history.txt"), "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["epoch", "train_mse", "valid_mse"])
         for epoch in range(1, epochs + 1):
             print(f"\nStart training epoch {epoch} with lr {get_lr(optimizer)}")
             time_start = time.time()
@@ -148,7 +147,7 @@ def train(
             )
             if scheduler is not None:
                 perform_scheduler_step(scheduler, validation_loss)
-            writer.writerow([epoch, train_loss, validation_loss])
+            writer.writerow([train_loss, validation_loss])
             f.flush()
             print(
                 f"Epoch {epoch}/{epochs}: training MSE = {train_loss:.6g}, "
@@ -236,7 +235,7 @@ def train_local():
         yaml.dump(local_settings, f, default_flow_style=False, sort_keys=False)
 
     run_training(train_settings, local_settings, args.train_dir)
-    print("Compression training complete. Saved autoencoder.pt and history.csv.")
+    print("Compression training complete. Saved autoencoder.pt and history.txt.")
 
 
 if __name__ == "__main__":
