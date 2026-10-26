@@ -11,6 +11,7 @@ import glasflow.nflows as nflows  # nflows not maintained, so use this maintaine
 from glasflow.nflows import distributions, flows, transforms
 import glasflow.nflows.nn.nets as nflows_nets
 from dingo.core.utils import torchutils
+from dingo.core.nn.autoencoder import DenseResidualAutoencoder
 from dingo.core.nn.enets import create_enet_with_projection_layer_and_dense_resnet
 from dingo.core.nn.resnet import DenseResidualNet, check_norm_option
 from typing import Union, Callable, Tuple, Optional
@@ -283,6 +284,40 @@ class FlowWrapper(nn.Module):
             return self.log_prob(y)
 
 
+class CompressionFlowWrapper(nn.Module):
+    """Condition a flow on a compression latent and optionally reconstruct strain.
+
+    The compression module provides encode(strain) and decode(latent). Auxiliary
+    context is concatenated after the latent; clean targets never enter the flow.
+    """
+
+    def __init__(self, flow: flows.base.Flow, compression_net: nn.Module):
+        super().__init__()
+        self.flow = flow
+        self.compression_net = compression_net
+
+    @staticmethod
+    def _flow_context(latent, context):
+        return torch.cat((latent, *context), dim=-1) if context else latent
+
+    def forward(self, theta, strain, *context, return_reconstruction=False):
+        latent = self.compression_net.encode(strain)
+        log_prob = self.flow.log_prob(theta, self._flow_context(latent, context))
+        if return_reconstruction:
+            return log_prob, self.compression_net.decode(latent)
+        return log_prob
+
+    def sample(self, strain, *context, num_samples=1):
+        latent = self.compression_net.encode(strain)
+        return self.flow.sample(num_samples, self._flow_context(latent, context))
+
+    def sample_and_log_prob(self, strain, *context, num_samples=1):
+        latent = self.compression_net.encode(strain)
+        return self.flow.sample_and_log_prob(
+            num_samples, self._flow_context(latent, context)
+        )
+
+
 def create_nsf_model(
     input_dim: int,
     context_dim: int,
@@ -337,6 +372,31 @@ def create_nsf_wrapped(**kwargs):
     """
     flow = create_nsf_model(**kwargs)
     return FlowWrapper(flow)
+
+
+def create_nsf_with_compression_embedding_net(
+    posterior_kwargs: dict,
+    embedding_kwargs: dict,
+    initial_weights: dict = None,
+):
+    """Build a flow conditioned directly on a dense residual autoencoder's latent.
+
+    Parameters
+    ----------
+    posterior_kwargs : dict
+        kwargs for neural spline flow
+    embedding_kwargs : dict
+        kwargs for compressor embedding network
+    initial_weights : dict
+        accepted for interface parity with the resnet builder (the posterior model
+        always passes it); the compression embedding has no SVD initialization, so
+        it is ignored.
+    """
+    if posterior_kwargs.get("embedding_net_builder") is not None:
+        raise ValueError("The compression latent must enter the flow directly.")
+    compression_net = DenseResidualAutoencoder(**embedding_kwargs)
+    flow = create_nsf_model(**posterior_kwargs)
+    return CompressionFlowWrapper(flow, compression_net)
 
 
 def create_nsf_with_transformer_embedding_net(

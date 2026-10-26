@@ -20,10 +20,13 @@ class DenoisingTransforms:
     Returns [input, target], with shapes (..., detectors, 3, bins) and
     (..., detectors, 2, bins), respectively. The input includes inverse ASD;
     the target contains only real and imaginary noiseless strain.
+
+    With keep_parameters=True, return [parameters, input, target, *context].
     """
 
-    def __init__(self, transforms):
+    def __init__(self, transforms, keep_parameters=False):
         self.transforms = list(transforms)
+        self.keep_parameters = keep_parameters
         # After repackaging, only cropping and unpacking support the temporary
         # five-channel representation. Reject other layouts rather than silently
         # changing the network inputs or selecting the wrong target channels.
@@ -59,5 +62,11 @@ class DenoisingTransforms:
                 continue
             elif isinstance(transform, UnpackDict):
                 waveform = sample["waveform"]
-                return [waveform[..., :3, :], waveform[..., 3:, :]]
+                inputs, target = waveform[..., :3, :], waveform[..., 3:, :]
+                if self.keep_parameters:
+                    sample = sample.copy()
+                    sample["waveform"] = inputs
+                    parameters, inputs, *context = transform(sample)
+                    return [parameters, inputs, target, *context]
+                return [inputs, target]
             sample = transform(sample)

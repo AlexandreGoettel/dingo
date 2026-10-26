@@ -1,6 +1,9 @@
+from torch.nn import functional as F
+
 from .base_model import BasePosteriorModel
 
 from dingo.core.nn.nsf import (
+    create_nsf_with_compression_embedding_net,
     create_nsf_with_rb_projection_embedding_net,
     create_nsf_with_transformer_embedding_net,
     create_nsf_wrapped,
@@ -48,6 +51,10 @@ class NormalizingFlowPosteriorModel(BasePosteriorModel):
         embedding_type = (self.model_kwargs.get("embedding_type") or "").lower()
         if embedding_type == "transformer":
             self.network = create_nsf_with_transformer_embedding_net(**model_kwargs)
+        elif embedding_type == "compression":
+            training = self.metadata["train_settings"].setdefault("training", {})
+            self.mse_weight = float(training.setdefault("lambda", 1.0))
+            self.network = create_nsf_with_compression_embedding_net(**model_kwargs)
         elif self.model_kwargs.get("embedding_kwargs", False):
             self.network = create_nsf_with_rb_projection_embedding_net(**model_kwargs)
         else:
@@ -63,4 +70,19 @@ class NormalizingFlowPosteriorModel(BasePosteriorModel):
         return self.network.sample_and_log_prob(*context, num_samples=num_samples)
 
     def loss(self, theta, *context):
+        if (self.model_kwargs.get("embedding_type") or "").lower() == "compression":
+            return self.compression_loss_components(theta, *context)[0]
         return -self.network(theta, *context).mean()
+
+    def compression_loss_components(self, theta, strain, target, *context):
+        """Return (total, SBI, unweighted MSE) for a compression embedding."""
+        # Share one encoder evaluation between the flow and decoder.
+        log_prob, reconstruction = self.network(
+            theta, strain, *context, return_reconstruction=True
+        )
+        # The ASD channel has no reconstruction loss.
+        strain_reconstruction = reconstruction[..., :2, :]
+        sbi_loss = -log_prob.mean()
+        compression_loss = F.mse_loss(strain_reconstruction, target)
+        loss = sbi_loss + self.mse_weight * compression_loss
+        return loss, sbi_loss, compression_loss

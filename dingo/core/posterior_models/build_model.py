@@ -91,6 +91,15 @@ def autocomplete_model_kwargs(model_kwargs: dict, data_sample: list):
 
     embedding_type = (model_kwargs.get("embedding_type") or "resnet").lower()
 
+    if embedding_type == "compression":
+        embedding_kwargs = model_kwargs["embedding_kwargs"]
+        embedding_kwargs["input_dims"] = list(data_sample[1].shape)
+        model_kwargs["posterior_kwargs"]["context_dim"] = (
+            embedding_kwargs["output_dim"]
+            + sum(len(context) for context in data_sample[2:])
+        )
+        return
+
     if embedding_type == "transformer":
         tokenizer_kwargs = model_kwargs["embedding_kwargs"]["tokenizer_kwargs"]
         tokenizer_kwargs["input_dim"] = int(data_sample[1].shape[-1])

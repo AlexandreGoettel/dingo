@@ -137,6 +137,7 @@ dingo_result = "dingo.pipe.dingo_result:main"
 dingo_train = "dingo.gw.training:train_local"
 dingo_train_compression = "dingo.gw.training.train_pipeline_compression:train_local"
 dingo_train_condor = "dingo.gw.training.train_pipeline_condor:train_condor"
+dingo_train_sbicomp = "dingo.gw.training.train_pipeline_sbicomp:train_local"
 
 [project.entry-points."asimov.pipelines"]
 dingo = "dingo.asimov.asimov:Dingo"
