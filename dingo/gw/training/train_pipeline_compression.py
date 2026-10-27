@@ -3,6 +3,7 @@
 import argparse
 import csv
 import os
+import subprocess
 import time
 from copy import deepcopy
 
@@ -40,6 +41,12 @@ def parse_args():
     )
     parser.add_argument(
         "--train_dir", required=True, help="Directory for Dingo training output."
+    )
+    parser.add_argument(
+        "--exit_command",
+        type=str,
+        default="",
+        help="Optional command to execute after completion of training.",
     )
     return parser.parse_args()
 
@@ -244,6 +251,9 @@ def train_local():
 
     run_training(train_settings, local_settings, args.train_dir)
     print("Compression training complete. Best model: model_latest.pt; losses: history.txt.")
+    if args.exit_command:
+        print(f"Executing exit command: {args.exit_command}.")
+        subprocess.run(args.exit_command, shell=True, check=False)
 
 
 if __name__ == "__main__":

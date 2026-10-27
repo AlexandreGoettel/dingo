@@ -14,6 +14,7 @@ No SVD projection or initialization is used.
 import argparse
 import csv
 import os
+import subprocess
 
 import torch
 import yaml
@@ -161,11 +162,20 @@ def train_local():
     parser = argparse.ArgumentParser(description="Train SBI compression from scratch.")
     parser.add_argument("--settings_file", required=True, help="Training settings YAML.")
     parser.add_argument("--train_dir", required=True, help="Training output directory.")
+    parser.add_argument(
+        "--exit_command",
+        type=str,
+        default="",
+        help="Optional command to execute after completion of training.",
+    )
     args = parser.parse_args()
     with open(args.settings_file, "r") as f:
         train_settings = yaml.safe_load(f)
     local_settings = train_settings.pop("local")
     run_training(train_settings, local_settings, args.train_dir)
+    if args.exit_command:
+        print(f"Training complete. Executing exit command: {args.exit_command}.")
+        subprocess.run(args.exit_command, shell=True, check=False)
 
 
 if __name__ == "__main__":
