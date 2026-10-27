@@ -381,6 +381,88 @@ class FlowFactor(Factor):
         return {**_describe_default(self), "unconditional": self.unconditional}
 
 
+class CompressionFlowFactor(FlowFactor):
+    """A two-pass compression proposal bound to an event and fixed auxiliary context.
+
+    Unlike FlowFactor, this prepares the encoder context only once per event,
+    retaining it across chunks and log_prob calls. It is for fixed-context chains,
+    not row-varying GNPE or scan conditioning. initial_parameters optionally
+    replays a standardized estimate in the model's inference-parameter order.
+    """
+
+    def __init__(self, model, aliases=None, initial_parameters=None):
+        """Set up event caching and an optional standardized replay estimate."""
+        super().__init__(model, aliases)
+        self._initial_parameters = initial_parameters
+        self._proposal = None
+        self._event_context = None
+
+    def _prepare(self, context, given):
+        """Reuse the proposal, preparing it only when the event context changes."""
+        if self._proposal is None or self._event_context is not context:
+            self.model.network.eval()
+            if self.context_parameters:
+                # All rows are the same pins in this fixed-context chain.
+                fixed = {name: values[:1] for name, values in given.items()}
+                data = _network_inputs(context.prepared_data(conditioning=fixed))
+                auxiliary = (
+                    self.standardization.standardize(
+                        self._network_conditioning(fixed), self.context_parameters
+                    ),
+                )
+            else:
+                data = _network_inputs(context.prepared_data(), rows=1)
+                auxiliary = ()
+            self._proposal = self.model.prepare_compression_proposal(
+                *data, *auxiliary, initial_parameters=self._initial_parameters
+            )
+            self._event_context = context
+        return self._proposal
+
+    def sample_and_log_prob(self, num_samples, context, given=None):
+        """Draw from the retained proposal and return physical-space densities."""
+        proposal = self._prepare(context, given)
+        rows = _n_rows(given) if self.context_parameters else 1
+        z, log_prob = self.model.sample_and_log_prob(
+            proposal, num_samples=rows * num_samples
+        )
+        theta = self.standardization.destandardize(z.squeeze(0), self._net_parameters)
+        theta = {self.aliases.get(name, name): value for name, value in theta.items()}
+        return theta, log_prob.squeeze(0) + self.standardization.log_det(
+            self._net_parameters
+        )
+
+    def log_prob(self, theta_i, context, given=None):
+        """Evaluate physical-space log densities under the retained proposal."""
+        proposal = self._prepare(context, given)
+        theta_net = {
+            net: theta_i[self.aliases.get(net, net)] for net in self._net_parameters
+        }
+        z = self.standardization.standardize(theta_net, self._net_parameters)
+        return self.model.log_prob(z, proposal) + self.standardization.log_det(
+            self._net_parameters
+        )
+
+    def describe(self):
+        """Record the initial estimate and its parameter order for replay."""
+        initial = self._initial_parameters
+        if self._proposal is not None:
+            initial = self._proposal.initial_parameters
+        if initial is not None:
+            initial = (
+                torch.as_tensor(initial)
+                .reshape(-1, len(self._net_parameters))[0]
+                .cpu()
+                .tolist()
+            )
+        return {
+            **super().describe(),
+            "initial_parameters": initial,
+            "initial_parameter_order": list(self._net_parameters),
+            "initial_parameters_standardized": True,
+        }
+
+
 class DeltaFactor(Factor):
     """
     A point mass `q_i = delta(theta_i - c)` that pins parameters to fixed values.

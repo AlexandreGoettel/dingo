@@ -9,6 +9,13 @@ training.lambda weights the clean-strain MSE (default 1.0):
     loss = -mean(log q(theta | encoder(strain))) + lambda * MSE
 
 No SVD projection or initialization is used.
+
+Set model.embedding_kwargs.condition_on_parameters: true to enable two passes.
+The data-only encoder initializes parameters using one fixed flow base draw,
+saved with the network (embedding_kwargs.initialization_seed defaults to 0).
+The second encoder conditions on those estimates. training.beta (default 1.0)
+weights latent MSE, which updates only the data-only encoder; its target is the
+detached conditional latent. True parameters are only the SBI targets.
 """
 
 import argparse
@@ -64,7 +71,7 @@ def prepare_training(train_settings, local_settings):
 
 
 def run_epoch(pm, loader, *, training):
-    """Return sample-averaged (total, SBI, unweighted compression) losses."""
+    """Return sample-averaged (total, SBI, reconstruction, latent) losses."""
     pm.network.train(training)
     loss_info = LossInfo(
         epoch=pm.epoch,
@@ -74,7 +81,7 @@ def run_epoch(pm, loader, *, training):
         print_freq=1,
         device=pm.device,
     )
-    component_sums = torch.zeros(2, device=pm.device, dtype=torch.float64)
+    component_sums = torch.zeros(3, device=pm.device, dtype=torch.float64)
     num_samples = 0
     with torch.set_grad_enabled(training):
         for batch_idx, data in enumerate(loader):
@@ -82,20 +89,20 @@ def run_epoch(pm, loader, *, training):
             data = [d.to(pm.device, non_blocking=True) for d in data]
             if training:
                 pm.optimizer.zero_grad(set_to_none=True)
-            loss, sbi_loss, compression_loss = pm.compression_loss_components(*data)
+            loss, *components = pm.compression_loss_components(*data)
             if training:
                 loss.backward()
                 pm.optimizer.step()
             batch_size = len(data[0])
             component_sums += torch.stack(
-                (sbi_loss.detach(), compression_loss.detach())
+                [component.detach() for component in components]
             ).to(dtype=torch.float64) * batch_size
             num_samples += batch_size
             loss_info.cache_loss(loss, batch_size)
             loss_info.update()
             loss_info.print_info(batch_idx)
-    sbi_loss, compression_loss = (component_sums / num_samples).tolist()
-    return loss_info.get_avg(), sbi_loss, compression_loss
+    component_means = (component_sums / num_samples).tolist()
+    return (loss_info.get_avg(), *component_means)
 
 
 def run_training(train_settings, local_settings, train_dir):
@@ -122,29 +129,25 @@ def run_training(train_settings, local_settings, train_dir):
         best_validation_loss = float("inf")
         with open(os.path.join(train_dir, "history.txt"), "w", newline="") as f:
             # The comment header names columns and is compatible with numpy.loadtxt.
-            f.write(
-                "# train,valid,train_sbi,valid_sbi,train_compression,valid_compression\n"
-            )
+            header = "# train,valid,train_sbi,valid_sbi,train_compression,valid_compression"
+            if pm.condition_on_parameters:
+                header += ",train_latent,valid_latent"
+            f.write(header + "\n")
             writer = csv.writer(f)
+            num_losses = 4 if pm.condition_on_parameters else 3
             for pm.epoch in range(1, epochs + 1):
-                train_loss, train_sbi, train_compression = run_epoch(
-                    pm, train_loader, training=True
-                )
-                validation_loss, validation_sbi, validation_compression = run_epoch(
-                    pm, test_loader, training=False
-                )
+                train_losses = run_epoch(pm, train_loader, training=True)
+                validation_losses = run_epoch(pm, test_loader, training=False)
+                train_loss, validation_loss = train_losses[0], validation_losses[0]
                 if pm.scheduler is not None:
                     perform_scheduler_step(pm.scheduler, validation_loss)
-                writer.writerow(
-                    [
-                        train_loss,
-                        validation_loss,
-                        train_sbi,
-                        validation_sbi,
-                        train_compression,
-                        validation_compression,
-                    ]
-                )
+                # Keep each training loss next to its validation counterpart.
+                row = []
+                for pair in zip(
+                    train_losses[:num_losses], validation_losses[:num_losses]
+                ):
+                    row.extend(pair)
+                writer.writerow(row)
                 f.flush()
                 if validation_loss < best_validation_loss:
                     pm.save_model(

@@ -4,6 +4,7 @@ from the uci.py example from https://github.com/bayesiains/nsf.
 """
 
 import copy
+from contextlib import contextmanager
 
 import torch
 import torch.nn as nn
@@ -11,7 +12,7 @@ import glasflow.nflows as nflows  # nflows not maintained, so use this maintaine
 from glasflow.nflows import distributions, flows, transforms
 import glasflow.nflows.nn.nets as nflows_nets
 from dingo.core.utils import torchutils
-from dingo.core.nn.autoencoder import DenseResidualAutoencoder
+from dingo.core.nn.autoencoder import DenseResidualAutoencoder, create_dense_encoder
 from dingo.core.nn.enets import create_enet_with_projection_layer_and_dense_resnet
 from dingo.core.nn.resnet import DenseResidualNet, check_norm_option
 from typing import Union, Callable, Tuple, Optional
@@ -318,6 +319,126 @@ class CompressionFlowWrapper(nn.Module):
         )
 
 
+@contextmanager
+def _evaluation_mode(module):
+    """Temporarily evaluate a module, restoring modes and transform cache state."""
+    modes = [(child, child.training) for child in module.modules()]
+    module.eval()
+    try:
+        yield
+    finally:
+        # Use train(), rather than assigning .training: nflows invalidates its
+        # linear-transform caches when switching back to training.
+        for child, training in modes:
+            if child.training != training:
+                child.train(training)
+
+
+class CompressionProposal:
+    """Fixed inference context for one batch of observations and a frozen model.
+
+    This is event state, not a registered network or model-checkpoint field.
+    Densities condition on initial_parameters; they exclude its first-pass density.
+    """
+
+    def __init__(self, flow, initial_parameters, flow_context):
+        """Retain detached copies of the estimate and final flow context."""
+        self.flow = flow
+        self.initial_parameters = initial_parameters.detach().clone()
+        self.flow_context = flow_context.detach().clone()
+
+    def sample(self, num_samples=1):
+        """Return [B, N, P] samples, using the retained context."""
+        with torch.no_grad(), _evaluation_mode(self.flow):
+            return self.flow.sample(num_samples, self.flow_context)
+
+    def sample_and_log_prob(self, num_samples=1):
+        """Return [B, N, P] samples and [B, N] conditional log densities."""
+        with torch.no_grad(), _evaluation_mode(self.flow):
+            return self.flow.sample_and_log_prob(num_samples, self.flow_context)
+
+    def log_prob(self, theta):
+        """Evaluate [B,P], [B,N,P], or [N,P] for a single observation."""
+        context = self.flow_context.expand(theta.shape[0], -1)
+        if theta.ndim == 3:
+            context = context.repeat_interleave(theta.shape[1], dim=0)
+        with torch.no_grad(), _evaluation_mode(self.flow):
+            log_prob = self.flow.log_prob(theta.reshape(-1, theta.shape[-1]), context)
+        return log_prob.reshape(theta.shape[:-1])
+
+
+class ConditionalCompressionFlowWrapper(CompressionFlowWrapper):
+    """Two-pass compression with a distilled data-only initialization encoder.
+
+    Training forward calls use raw strain and return_reconstruction=True.
+    Inference calls instead take a prepared CompressionProposal as their context.
+    """
+
+    def __init__(
+        self, flow, compression_net, data_encoder, parameter_dim, initialization_seed=0
+    ):
+        """Attach both encoders and register one seeded base-noise vector."""
+        super().__init__(flow, compression_net)
+        self.data_encoder = data_encoder
+        generator = torch.Generator(device="cpu").manual_seed(initialization_seed)
+        self.register_buffer(
+            "initial_base_noise",
+            torch.randn(1, parameter_dim, generator=generator, device="cpu"),
+        )
+
+    def initial_parameters_from_latent(self, latent, *context):
+        """Invert the same saved base draw for every row, without gradients.
+
+        The output remains in standardized inference-parameter coordinates.
+        Batch position, batch size, and the global RNG do not select the draw.
+        """
+        with torch.no_grad(), _evaluation_mode(self.flow):
+            flow_context = self._flow_context(latent.detach(), context)
+            embedded_context = self.flow._embedding_net(flow_context)
+            initial_parameters, _ = self.flow._transform.inverse(
+                self.initial_base_noise.expand(latent.shape[0], -1),
+                context=embedded_context,
+            )
+        return initial_parameters
+
+    def forward(self, theta, strain_or_proposal, *context, return_reconstruction=False):
+        """Evaluate a proposal or return log densities and training loss inputs."""
+        if not return_reconstruction:
+            return strain_or_proposal.log_prob(theta)
+        strain = strain_or_proposal
+        data_latent = self.data_encoder(strain)
+        initial_parameters = self.initial_parameters_from_latent(data_latent, *context)
+        latent = self.compression_net.encode(strain, initial_parameters)
+        log_prob = self.flow.log_prob(theta, self._flow_context(latent, context))
+        return log_prob, self.compression_net.decode(latent), data_latent, latent
+
+    def prepare_proposal(self, strain, *context, initial_parameters=None):
+        """Prepare detached inference state, optionally replaying an initial estimate."""
+        with torch.no_grad(), _evaluation_mode(self):
+            if initial_parameters is None:
+                data_latent = self.data_encoder(strain)
+                initial_parameters = self.initial_parameters_from_latent(
+                    data_latent, *context
+                )
+            else:
+                initial_parameters = torch.as_tensor(
+                    initial_parameters, device=strain.device, dtype=strain.dtype
+                ).reshape(-1, self.initial_base_noise.shape[-1])
+                initial_parameters = initial_parameters.expand(strain.shape[0], -1)
+            latent = self.compression_net.encode(strain, initial_parameters)
+            return CompressionProposal(
+                self.flow, initial_parameters, self._flow_context(latent, context)
+            )
+
+    def sample(self, proposal, num_samples=1):
+        """Draw samples using a prepared proposal's fixed conditioning."""
+        return proposal.sample(num_samples)
+
+    def sample_and_log_prob(self, proposal, num_samples=1):
+        """Draw samples and log densities using a prepared proposal."""
+        return proposal.sample_and_log_prob(num_samples)
+
+
 def create_nsf_model(
     input_dim: int,
     context_dim: int,
@@ -394,8 +515,22 @@ def create_nsf_with_compression_embedding_net(
     """
     if posterior_kwargs.get("embedding_net_builder") is not None:
         raise ValueError("The compression latent must enter the flow directly.")
-    compression_net = DenseResidualAutoencoder(**embedding_kwargs)
+    embedding_kwargs = copy.deepcopy(embedding_kwargs)
+    condition_on_parameters = embedding_kwargs.pop("condition_on_parameters", False)
+    initialization_seed = embedding_kwargs.pop("initialization_seed", 0)
+    parameter_dim = posterior_kwargs["input_dim"] if condition_on_parameters else 0
+    compression_net = DenseResidualAutoencoder(
+        **embedding_kwargs, parameter_dim=parameter_dim
+    )
     flow = create_nsf_model(**posterior_kwargs)
+    if condition_on_parameters:
+        return ConditionalCompressionFlowWrapper(
+            flow,
+            compression_net,
+            create_dense_encoder(**embedding_kwargs),
+            parameter_dim,
+            initialization_seed,
+        )
     return CompressionFlowWrapper(flow, compression_net)
 
 

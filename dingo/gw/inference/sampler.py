@@ -7,6 +7,7 @@ from typing import Optional
 from bilby.core.prior import DeltaFunction
 from dingo.core.inference.composer import ChainComposer, ComposedSampler, GibbsBlock
 from dingo.core.inference.steps import (
+    CompressionFlowFactor,
     DeltaFactor,
     Factor,
     FlowFactor,
@@ -67,7 +68,7 @@ def _delta_prior_steps(prior, inference_parameters: list[str]) -> list:
     return [DeltaFactor(fixed)] if fixed else []
 
 
-def single_network_steps(model, prior) -> list:
+def single_network_steps(model, prior, flow_factor=None) -> list:
     """The steps of a single-network chain, without its root.
 
     That is: the flow (with the right-ascension frame adjustments for a pinned or
@@ -82,6 +83,9 @@ def single_network_steps(model, prior) -> list:
         The (conditional) model.
     prior : PriorDict
         The static prior (`GWSamplerContext.prior`), for the delta-prior fillers.
+    flow_factor : Factor, optional
+        An event-bound factor, used by two-pass compression. Other callers retain
+        the ordinary FlowFactor and its existing context handling.
 
     Returns
     -------
@@ -90,9 +94,11 @@ def single_network_steps(model, prior) -> list:
     data_settings = model.base_metadata["train_settings"]["data"]
     inference_parameters = data_settings["inference_parameters"]
     context_parameters = data_settings.get("context_parameters") or []
-    flow = FlowFactor(
-        model, aliases=_ra_aliases(inference_parameters + context_parameters)
-    )
+    flow = flow_factor
+    if flow is None:
+        flow = FlowFactor(
+            model, aliases=_ra_aliases(inference_parameters + context_parameters)
+        )
     # A pinned event-frame sky position is rotated into the training frame before
     # the network, and back into the event frame after it.
     ra_pinned = "ra" in context_parameters
@@ -186,6 +192,7 @@ class GWComposedSampler(ComposedSampler):
         event_data: dict,
         event_metadata: Optional[dict] = None,
         fixed_context_parameters: Optional[dict] = None,
+        compression_initial_parameters=None,
     ) -> "GWComposedSampler":
         """Build a single-network GW sampler from a model and event data.
 
@@ -212,6 +219,11 @@ class GWComposedSampler(ComposedSampler):
         fixed_context_parameters : dict, optional
             Pinned values for the model's `context_parameters`, e.g.
             `{"chirp_mass_proxy": 1.1975, "ra": 3.446, "dec": -0.408}`.
+        compression_initial_parameters : sequence, optional
+            Replay a two-pass compression estimate in standardized inference-
+            parameter order. Otherwise the model's saved base-noise vector defines
+            it. One estimate is retained for the event across sampling chunks.
+            This path supports fixed auxiliary context, not dynamic GNPE or scans.
 
         Returns
         -------
@@ -238,7 +250,22 @@ class GWComposedSampler(ComposedSampler):
                 f"fixed_context_parameters with exactly these keys, got "
                 f"{sorted(fixed_context_parameters or {})}."
             )
-        steps = single_network_steps(model, context.prior)
+        model_settings = model.base_metadata["train_settings"].get("model", {})
+        flow_factor = None
+        if (
+            (model_settings.get("embedding_type") or "").lower() == "compression"
+            and model_settings.get("embedding_kwargs", {}).get(
+                "condition_on_parameters", False
+            )
+        ):
+            flow_factor = CompressionFlowFactor(
+                model,
+                aliases=_ra_aliases(
+                    data_settings["inference_parameters"] + context_parameters
+                ),
+                initial_parameters=compression_initial_parameters,
+            )
+        steps = single_network_steps(model, context.prior, flow_factor=flow_factor)
         if context_parameters:
             steps = [DeltaFactor(fixed_context_parameters)] + steps
         return cls(ChainComposer(steps), context)
