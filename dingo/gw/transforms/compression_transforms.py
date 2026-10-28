@@ -21,7 +21,7 @@ class DenoisingTransforms:
     (..., detectors, 2, bins), respectively. The input includes inverse ASD;
     the target contains only real and imaginary noiseless strain.
 
-    With keep_parameters=True, return [parameters, input, target, *context].
+    With keep_parameters=True, return [parameters, input, target].
     """
 
     def __init__(self, transforms, keep_parameters=False):
@@ -66,7 +66,7 @@ class DenoisingTransforms:
                 if self.keep_parameters:
                     sample = sample.copy()
                     sample["waveform"] = inputs
-                    parameters, inputs, *context = transform(sample)
-                    return [parameters, inputs, target, *context]
+                    parameters, inputs = transform(sample)
+                    return [parameters, inputs, target]
                 return [inputs, target]
             sample = transform(sample)

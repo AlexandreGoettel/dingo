@@ -94,10 +94,7 @@ def autocomplete_model_kwargs(model_kwargs: dict, data_sample: list):
     if embedding_type == "compression":
         embedding_kwargs = model_kwargs["embedding_kwargs"]
         embedding_kwargs["input_dims"] = list(data_sample[1].shape)
-        model_kwargs["posterior_kwargs"]["context_dim"] = (
-            embedding_kwargs["output_dim"]
-            + sum(len(context) for context in data_sample[2:])
-        )
+        model_kwargs["posterior_kwargs"]["context_dim"] = embedding_kwargs["output_dim"]
         return
 
     if embedding_type == "transformer":

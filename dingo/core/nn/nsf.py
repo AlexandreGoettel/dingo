@@ -286,37 +286,36 @@ class FlowWrapper(nn.Module):
 
 
 class CompressionFlowWrapper(nn.Module):
-    """Condition a flow on a compression latent and optionally reconstruct strain.
-
-    The compression module provides encode(strain) and decode(latent). Auxiliary
-    context is concatenated after the latent; clean targets never enter the flow.
-    """
+    """Condition a flow on compressed strain and reconstruct it during training."""
 
     def __init__(self, flow: flows.base.Flow, compression_net: nn.Module):
         super().__init__()
         self.flow = flow
         self.compression_net = compression_net
 
-    @staticmethod
-    def _flow_context(latent, context):
-        return torch.cat((latent, *context), dim=-1) if context else latent
+    def forward(self, theta, data):
+        """Evaluate log densities using strain or a prepared two-pass proposal."""
+        return self.log_prob(theta, data)
 
-    def forward(self, theta, strain, *context, return_reconstruction=False):
+    def log_prob(self, theta, strain):
+        """Evaluate log densities conditioned on compressed strain."""
         latent = self.compression_net.encode(strain)
-        log_prob = self.flow.log_prob(theta, self._flow_context(latent, context))
-        if return_reconstruction:
-            return log_prob, self.compression_net.decode(latent)
-        return log_prob
+        return self.flow.log_prob(theta, latent)
 
-    def sample(self, strain, *context, num_samples=1):
+    def training_outputs(self, theta, strain):
+        """Return log densities and reconstruction from one encoder pass."""
         latent = self.compression_net.encode(strain)
-        return self.flow.sample(num_samples, self._flow_context(latent, context))
+        return self.flow.log_prob(theta, latent), self.compression_net.decode(latent)
 
-    def sample_and_log_prob(self, strain, *context, num_samples=1):
+    def sample(self, strain, num_samples=1):
+        """Draw samples conditioned on compressed strain."""
         latent = self.compression_net.encode(strain)
-        return self.flow.sample_and_log_prob(
-            num_samples, self._flow_context(latent, context)
-        )
+        return self.flow.sample(num_samples, latent)
+
+    def sample_and_log_prob(self, strain, num_samples=1):
+        """Draw samples and log densities conditioned on compressed strain."""
+        latent = self.compression_net.encode(strain)
+        return self.flow.sample_and_log_prob(num_samples, latent)
 
 
 @contextmanager
@@ -370,8 +369,7 @@ class CompressionProposal:
 class ConditionalCompressionFlowWrapper(CompressionFlowWrapper):
     """Two-pass compression with a distilled data-only initialization encoder.
 
-    Training forward calls use raw strain and return_reconstruction=True.
-    Inference calls instead take a prepared CompressionProposal as their context.
+    training_outputs uses raw strain; inference uses a prepared CompressionProposal.
     """
 
     def __init__(
@@ -386,49 +384,44 @@ class ConditionalCompressionFlowWrapper(CompressionFlowWrapper):
             torch.randn(1, parameter_dim, generator=generator, device="cpu"),
         )
 
-    def initial_parameters_from_latent(self, latent, *context):
+    def initial_parameters_from_latent(self, latent):
         """Invert the same saved base draw for every row, without gradients.
 
         The output remains in standardized inference-parameter coordinates.
         Batch position, batch size, and the global RNG do not select the draw.
         """
         with torch.no_grad(), _evaluation_mode(self.flow):
-            flow_context = self._flow_context(latent.detach(), context)
-            embedded_context = self.flow._embedding_net(flow_context)
             initial_parameters, _ = self.flow._transform.inverse(
                 self.initial_base_noise.expand(latent.shape[0], -1),
-                context=embedded_context,
+                context=latent,
             )
         return initial_parameters
 
-    def forward(self, theta, strain_or_proposal, *context, return_reconstruction=False):
-        """Evaluate a proposal or return log densities and training loss inputs."""
-        if not return_reconstruction:
-            return strain_or_proposal.log_prob(theta)
-        strain = strain_or_proposal
+    def log_prob(self, theta, proposal):
+        """Evaluate log densities under a prepared proposal."""
+        return proposal.log_prob(theta)
+
+    def training_outputs(self, theta, strain):
+        """Return log densities, reconstruction, and both latents for the losses."""
         data_latent = self.data_encoder(strain)
-        initial_parameters = self.initial_parameters_from_latent(data_latent, *context)
+        initial_parameters = self.initial_parameters_from_latent(data_latent)
         latent = self.compression_net.encode(strain, initial_parameters)
-        log_prob = self.flow.log_prob(theta, self._flow_context(latent, context))
+        log_prob = self.flow.log_prob(theta, latent)
         return log_prob, self.compression_net.decode(latent), data_latent, latent
 
-    def prepare_proposal(self, strain, *context, initial_parameters=None):
+    def prepare_proposal(self, strain, initial_parameters=None):
         """Prepare detached inference state, optionally replaying an initial estimate."""
         with torch.no_grad(), _evaluation_mode(self):
             if initial_parameters is None:
                 data_latent = self.data_encoder(strain)
-                initial_parameters = self.initial_parameters_from_latent(
-                    data_latent, *context
-                )
+                initial_parameters = self.initial_parameters_from_latent(data_latent)
             else:
                 initial_parameters = torch.as_tensor(
                     initial_parameters, device=strain.device, dtype=strain.dtype
                 ).reshape(-1, self.initial_base_noise.shape[-1])
                 initial_parameters = initial_parameters.expand(strain.shape[0], -1)
             latent = self.compression_net.encode(strain, initial_parameters)
-            return CompressionProposal(
-                self.flow, initial_parameters, self._flow_context(latent, context)
-            )
+            return CompressionProposal(self.flow, initial_parameters, latent)
 
     def sample(self, proposal, num_samples=1):
         """Draw samples using a prepared proposal's fixed conditioning."""

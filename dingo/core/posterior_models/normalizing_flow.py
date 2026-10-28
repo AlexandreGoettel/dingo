@@ -83,32 +83,19 @@ class NormalizingFlowPosteriorModel(BasePosteriorModel):
             )
         )
 
-    def prepare_compression_proposal(self, strain, *context, initial_parameters=None):
-        """Prepare two-pass inference context for sample/sample_and_log_prob/log_prob.
-
-        Only for parameter-conditioned compression. The optional replay estimate
-        is in standardized inference-parameter order. Retain the returned proposal
-        for all draws and density evaluations of the same observation.
-        """
-        return self.network.prepare_proposal(
-            strain, *context, initial_parameters=initial_parameters
-        )
-
     def loss(self, theta, *context):
         if (self.model_kwargs.get("embedding_type") or "").lower() == "compression":
             return self.compression_loss_components(theta, *context)[0]
         return -self.network(theta, *context).mean()
 
-    def compression_loss_components(self, theta, strain, target, *context):
+    def compression_loss_components(self, theta, strain, target):
         """Return (total, SBI, reconstruction MSE, latent MSE).
 
         The data-only encoder receives only latent-matching gradients; the
         conditional latent is detached only for that matching target.
         """
         # Share one encoder evaluation between the flow and decoder.
-        log_prob, reconstruction, *latents = self.network(
-            theta, strain, *context, return_reconstruction=True
-        )
+        log_prob, reconstruction, *latents = self.network.training_outputs(theta, strain)
         # The ASD channel has no reconstruction loss.
         strain_reconstruction = reconstruction[..., :2, :]
         sbi_loss = -log_prob.mean()

@@ -223,7 +223,7 @@ class GWComposedSampler(ComposedSampler):
             Replay a two-pass compression estimate in standardized inference-
             parameter order. Otherwise the model's saved base-noise vector defines
             it. One estimate is retained for the event across sampling chunks.
-            This path supports fixed auxiliary context, not dynamic GNPE or scans.
+            This path does not support auxiliary conditioning.
 
         Returns
         -------
