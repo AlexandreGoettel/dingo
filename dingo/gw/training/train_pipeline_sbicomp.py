@@ -22,6 +22,7 @@ import argparse
 import csv
 import os
 import subprocess
+import time
 
 import torch
 import yaml
@@ -34,6 +35,7 @@ from dingo.core.posterior_models.build_model import (
 from dingo.core.utils import build_train_and_test_loaders
 from dingo.core.utils.trainutils import LossInfo
 from dingo.core.utils.torchutils import (
+    get_lr,
     perform_scheduler_step,
     print_number_of_model_parameters,
     set_float32_matmul_precision,
@@ -72,6 +74,11 @@ def prepare_training(train_settings, local_settings):
 
 def run_epoch(pm, loader, *, training):
     """Return sample-averaged (total, SBI, reconstruction, latent) losses."""
+    if training:
+        print(f"\nStart training epoch {pm.epoch} with lr {get_lr(pm.optimizer)}")
+    else:
+        print(f"Start testing epoch {pm.epoch}")
+    start_time = time.perf_counter()
     pm.network.train(training)
     loss_info = LossInfo(
         epoch=pm.epoch,
@@ -102,6 +109,8 @@ def run_epoch(pm, loader, *, training):
             loss_info.update()
             loss_info.print_info(batch_idx)
     component_means = (component_sums / num_samples).tolist()
+    minutes, seconds = divmod(round(time.perf_counter() - start_time), 60)
+    print(f"Done. This took {minutes}:{seconds:02d} min.")
     return (loss_info.get_avg(), *component_means)
 
 
