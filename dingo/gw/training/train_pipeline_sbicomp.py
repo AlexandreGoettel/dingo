@@ -16,6 +16,12 @@ saved with the network (embedding_kwargs.initialization_seed defaults to 0).
 The second encoder conditions on those estimates. training.beta (default 1.0)
 weights latent MSE, which updates only the data-only encoder; its target is the
 detached conditional latent. True parameters are only the SBI targets.
+
+Optional training.stage_0, stage_1, ... override shared training settings.
+Each stage specifies its own epoch count; optimizer and scheduler dictionaries
+replace the shared dictionaries in full. Stages retain network weights and the
+data split, but restart the optimizer, scheduler, and best-validation tracking.
+Without stage entries, the flat training settings define one stage.
 """
 
 import argparse
@@ -23,6 +29,7 @@ import csv
 import os
 import subprocess
 import time
+from copy import deepcopy
 
 import torch
 import yaml
@@ -114,59 +121,109 @@ def run_epoch(pm, loader, *, training):
     return (loss_info.get_avg(), *component_means)
 
 
-def run_training(train_settings, local_settings, train_dir):
-    """Record losses and save the model whenever combined validation loss improves."""
-    training = train_settings["training"]
-    epochs = training["epochs"]
+def train_stage(
+    pm, train_loader, test_loader, epochs, total_epochs, train_dir, history_file
+):
+    """Run one stage's epochs, recording losses and saving validation improvements."""
     if not isinstance(epochs, int) or epochs < 1:
         raise ValueError("training.epochs must be a positive integer.")
+    best_validation_loss = float("inf")
+    writer = csv.writer(history_file)
+    num_losses = 4 if pm.condition_on_parameters else 3
+    for pm.epoch in range(pm.epoch + 1, pm.epoch + epochs + 1):
+        train_losses = run_epoch(pm, train_loader, training=True)
+        validation_losses = run_epoch(pm, test_loader, training=False)
+        train_loss, validation_loss = train_losses[0], validation_losses[0]
+        if pm.scheduler is not None:
+            perform_scheduler_step(pm.scheduler, validation_loss)
+        # Keep each training loss next to its validation counterpart.
+        row = []
+        for pair in zip(train_losses[:num_losses], validation_losses[:num_losses]):
+            row.extend(pair)
+        writer.writerow(row)
+        history_file.flush()
+        if validation_loss < best_validation_loss:
+            pm.save_model(
+                os.path.join(train_dir, "model_latest.pt"),
+                save_training_info=False,
+            )
+            best_validation_loss = validation_loss
+        print(
+            f"Epoch {pm.epoch}/{total_epochs}: training loss = {train_loss:.6g}, "
+            f"validation loss = {validation_loss:.6g}"
+        )
+
+
+def run_training(train_settings, local_settings, train_dir):
+    """Resolve settings and initialize each stage around the training loop."""
+    train_settings = deepcopy(train_settings)
+    training = train_settings["training"]
+    stage_names = sorted(
+        (key for key in training if key.startswith("stage_")),
+        key=lambda key: int(key.removeprefix("stage_")),
+    )
+    defaults = {key: value for key, value in training.items() if key not in stage_names}
+    stages = [{**defaults, **training[name]} for name in stage_names] or [defaults]
+    total_epochs = sum(stage["epochs"] for stage in stages)
+    train_settings["training"] = {**training, **stages[0]}
     set_float32_matmul_precision(local_settings)
     with threadpool_limits(limits=1, user_api="blas"):
         pm, wfd = prepare_training(train_settings, local_settings)
-        train_loader, test_loader, _ = build_train_and_test_loaders(
-            dataset=wfd,
-            train_fraction=train_settings["data"]["train_fraction"],
-            batch_size=training["batch_size"],
-            num_workers=local_settings.get("num_workers", 0),
-        )
-        pm.optimizer_kwargs = training["optimizer"]
-        pm.scheduler_kwargs = training.get("scheduler")
-        pm.initialize_optimizer_and_scheduler()
         print_number_of_model_parameters(pm.network)
 
         os.makedirs(train_dir, exist_ok=True)
-        best_validation_loss = float("inf")
+        pm.epoch = 0
         with open(os.path.join(train_dir, "history.txt"), "w", newline="") as f:
             # The comment header names columns and is compatible with numpy.loadtxt.
             header = "# train,valid,train_sbi,valid_sbi,train_compression,valid_compression"
             if pm.condition_on_parameters:
                 header += ",train_latent,valid_latent"
             f.write(header + "\n")
-            writer = csv.writer(f)
-            num_losses = 4 if pm.condition_on_parameters else 3
-            for pm.epoch in range(1, epochs + 1):
-                train_losses = run_epoch(pm, train_loader, training=True)
-                validation_losses = run_epoch(pm, test_loader, training=False)
-                train_loss, validation_loss = train_losses[0], validation_losses[0]
-                if pm.scheduler is not None:
-                    perform_scheduler_step(pm.scheduler, validation_loss)
-                # Keep each training loss next to its validation counterpart.
-                row = []
-                for pair in zip(
-                    train_losses[:num_losses], validation_losses[:num_losses]
+            for stage_index, stage in enumerate(stages):
+                stage_name = stage_names[stage_index] if stage_names else "stage_0"
+                print(f"\nBeginning training {stage_name}. Settings:")
+                print(yaml.dump(stage, sort_keys=False))
+                # Save the complete schedule alongside the active settings.
+                if stage_index > 0:
+                    pm.metadata["train_settings"]["training"] = {**training, **stage}
+                pm.mse_weight = float(stage.get("lambda", 1.0))
+                pm.latent_weight = (
+                    float(stage.get("beta", 1.0)) if pm.condition_on_parameters else 0.0
+                )
+                if (
+                    stage_index > 0
+                    and stage["asd_dataset_path"]
+                    != stages[stage_index - 1]["asd_dataset_path"]
                 ):
-                    row.extend(pair)
-                writer.writerow(row)
-                f.flush()
-                if validation_loss < best_validation_loss:
-                    pm.save_model(
-                        os.path.join(train_dir, "model_latest.pt"),
-                        save_training_info=False,
+                    set_train_transforms(
+                        wfd, train_settings["data"], stage["asd_dataset_path"]
                     )
-                    best_validation_loss = validation_loss
-                print(
-                    f"Epoch {pm.epoch}/{epochs}: training loss = {train_loss:.6g}, "
-                    f"validation loss = {validation_loss:.6g}"
+                    wfd.transform = DenoisingTransforms(
+                        wfd.transform.transforms, keep_parameters=True
+                    )
+                train_loader, test_loader, _ = build_train_and_test_loaders(
+                    dataset=wfd,
+                    train_fraction=train_settings["data"]["train_fraction"],
+                    batch_size=stage["batch_size"],
+                    num_workers=local_settings.get("num_workers", 0),
+                )
+                pm.optimizer_kwargs = stage["optimizer"]
+                pm.scheduler_kwargs = stage.get("scheduler")
+                pm.scheduler = None
+                pm.initialize_optimizer_and_scheduler()
+                if stage_names:
+                    f.write(
+                        f"# {stage_name}: epochs "
+                        f"{pm.epoch + 1}-{pm.epoch + stage['epochs']}\n"
+                    )
+                train_stage(
+                    pm,
+                    train_loader,
+                    test_loader,
+                    stage["epochs"],
+                    total_epochs,
+                    train_dir,
+                    f,
                 )
 
 
