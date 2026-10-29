@@ -88,14 +88,18 @@ class NormalizingFlowPosteriorModel(BasePosteriorModel):
             return self.compression_loss_components(theta, *context)[0]
         return -self.network(theta, *context).mean()
 
-    def compression_loss_components(self, theta, strain, target):
-        """Return (total, SBI, reconstruction MSE, latent MSE).
-
-        The data-only encoder receives only latent-matching gradients; the
-        conditional latent is detached only for that matching target.
-        """
+    def compression_loss_components(
+        self, theta, strain, target, *, use_true_parameters=False
+    ):
+        """Return total, SBI, reconstruction MSE, and data-only latent MSE."""
         # Share one encoder evaluation between the flow and decoder.
-        log_prob, reconstruction, *latents = self.network.training_outputs(theta, strain)
+        if self.condition_on_parameters:
+            outputs = self.network.training_outputs(
+                theta, strain, use_true_parameters=use_true_parameters
+            )
+        else:
+            outputs = self.network.training_outputs(theta, strain)
+        log_prob, reconstruction, *latents = outputs
         # The ASD channel has no reconstruction loss.
         strain_reconstruction = reconstruction[..., :2, :]
         sbi_loss = -log_prob.mean()

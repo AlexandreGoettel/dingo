@@ -15,7 +15,15 @@ The data-only encoder initializes parameters using one fixed flow base draw,
 saved with the network (embedding_kwargs.initialization_seed defaults to 0).
 The second encoder conditions on those estimates. training.beta (default 1.0)
 weights latent MSE, which updates only the data-only encoder; its target is the
-detached conditional latent. True parameters are only the SBI targets.
+detached conditional latent.
+
+training.use_true_parameters_during_training (default false) instead supplies
+true parameters to the conditional encoder and detaches its latent at the flow
+input. The flow then learns only from SBI, the conditional encoder and decoder
+from reconstruction, and the data-only encoder from latent matching. This applies
+to both training and validation; inference always uses estimated parameters.
+Detaching separates gradients but does not prevent true-parameter information
+from reaching the flow.
 
 Optional training.stage_0, stage_1, ... override shared training settings.
 Each stage specifies its own epoch count; optimizer and scheduler dictionaries
@@ -79,8 +87,8 @@ def prepare_training(train_settings, local_settings):
     return pm, wfd
 
 
-def run_epoch(pm, loader, *, training):
-    """Return sample-averaged (total, SBI, reconstruction, latent) losses."""
+def run_epoch(pm, loader, *, training, use_true_parameters=False):
+    """Return mean (total, SBI, reconstruction, latent) losses for the stage mode."""
     if training:
         print(f"\nStart training epoch {pm.epoch} with lr {get_lr(pm.optimizer)}")
     else:
@@ -103,7 +111,9 @@ def run_epoch(pm, loader, *, training):
             data = [d.to(pm.device, non_blocking=True) for d in data]
             if training:
                 pm.optimizer.zero_grad(set_to_none=True)
-            loss, *components = pm.compression_loss_components(*data)
+            loss, *components = pm.compression_loss_components(
+                *data, use_true_parameters=use_true_parameters
+            )
             if training:
                 loss.backward()
                 pm.optimizer.step()
@@ -122,7 +132,8 @@ def run_epoch(pm, loader, *, training):
 
 
 def train_stage(
-    pm, train_loader, test_loader, epochs, total_epochs, train_dir, history_file
+    pm, train_loader, test_loader, epochs, total_epochs, train_dir, history_file,
+    *, use_true_parameters=False,
 ):
     """Run one stage's epochs, recording losses and saving validation improvements."""
     if not isinstance(epochs, int) or epochs < 1:
@@ -131,8 +142,12 @@ def train_stage(
     writer = csv.writer(history_file)
     num_losses = 4 if pm.condition_on_parameters else 3
     for pm.epoch in range(pm.epoch + 1, pm.epoch + epochs + 1):
-        train_losses = run_epoch(pm, train_loader, training=True)
-        validation_losses = run_epoch(pm, test_loader, training=False)
+        train_losses = run_epoch(
+            pm, train_loader, training=True, use_true_parameters=use_true_parameters
+        )
+        validation_losses = run_epoch(
+            pm, test_loader, training=False, use_true_parameters=use_true_parameters
+        )
         train_loss, validation_loss = train_losses[0], validation_losses[0]
         if pm.scheduler is not None:
             perform_scheduler_step(pm.scheduler, validation_loss)
@@ -224,6 +239,9 @@ def run_training(train_settings, local_settings, train_dir):
                     total_epochs,
                     train_dir,
                     f,
+                    use_true_parameters=stage.get(
+                        "use_true_parameters_during_training", False
+                    ),
                 )
 
 

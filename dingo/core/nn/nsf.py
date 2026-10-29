@@ -401,12 +401,18 @@ class ConditionalCompressionFlowWrapper(CompressionFlowWrapper):
         """Evaluate log densities under a prepared proposal."""
         return proposal.log_prob(theta)
 
-    def training_outputs(self, theta, strain):
-        """Return log densities, reconstruction, and both latents for the losses."""
+    def training_outputs(self, theta, strain, *, use_true_parameters=False):
+        """Return loss inputs, isolating SBI gradients when conditioning on truth."""
         data_latent = self.data_encoder(strain)
-        initial_parameters = self.initial_parameters_from_latent(data_latent)
+        initial_parameters = (
+            theta if use_true_parameters
+            else self.initial_parameters_from_latent(data_latent)
+        )
         latent = self.compression_net.encode(strain, initial_parameters)
-        log_prob = self.flow.log_prob(theta, latent)
+        # Detach only the flow input; reconstruction still trains the compressor.
+        # This blocks SBI gradients, not information about the true parameters.
+        flow_latent = latent.detach() if use_true_parameters else latent
+        log_prob = self.flow.log_prob(theta, flow_latent)
         return log_prob, self.compression_net.decode(latent), data_latent, latent
 
     def prepare_proposal(self, strain, initial_parameters=None):
