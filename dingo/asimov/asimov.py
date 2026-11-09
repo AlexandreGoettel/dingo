@@ -170,9 +170,11 @@ class DingoPipeline(Pipeline):
                 "f_max": settings["base_domain"]["f_max"],
             }
 
-            # PESummary cannot write lists of dictionaries such as sampler.chain to HDF5
-            if isinstance(result.settings.get("sampler"), dict):
-                result.settings["sampler"] = json.dumps(result.settings["sampler"])
+            # PESummary cannot write sampler chains (lists of dictionaries),
+            # including the provenance retained for each adaptive sampling round.
+            for key in ("sampler", "sampling_rounds"):
+                if isinstance(result.settings.get(key), dict):
+                    result.settings[key] = json.dumps(result.settings[key])
 
             filename, ext = os.path.splitext(result_files[0])
             result_files[0] = f"{filename}_pesummary{ext}"

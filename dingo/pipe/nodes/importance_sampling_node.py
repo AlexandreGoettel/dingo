@@ -17,8 +17,12 @@ class ImportanceSamplingNode(AnalysisNode):
         self.parallel_idx = parallel_idx
         self.request_cpus = inputs.request_cpus_importance_sampling
 
-        data_label = sampling_node.job_name
-        base_name = data_label.replace("sampling", "importance_sampling")
+        base_name = sampling_node.job_name.replace("sampling", "importance_sampling")
+        self.final_result_file = os.path.join(inputs.result_directory, base_name + ".hdf5")
+        if inputs.min_rss > 0:
+            # Asimov treats *importance_sampling.hdf5 as a completed production.
+            # Reserve that name until merge processing decides to stop.
+            base_name += "_weighted"
         self.base_job_name = base_name
         if parallel_idx != "":
             self.job_name = f"{base_name}_{parallel_idx}"
@@ -26,9 +30,11 @@ class ImportanceSamplingNode(AnalysisNode):
             self.job_name = base_name
         self.label = self.job_name
 
+        proposal_label = sampling_node.label
+        if parallel_idx:
+            proposal_label += f"_{parallel_idx}"
         proposal_samples_file = os.path.join(
-            self.inputs.result_directory,
-            self.label.replace("importance_sampling", "sampling") + ".hdf5",
+            inputs.result_directory, proposal_label + ".hdf5"
         )
 
         self.setup_arguments()
@@ -66,14 +72,9 @@ class ImportanceSamplingNode(AnalysisNode):
         self.arguments.add("label", self.label)
         self.arguments.add("proposal-samples-file", proposal_samples_file)
         self.arguments.add("event-data-file", generation_node.event_data_file)
-        if self.parallel_idx and self.inputs.sampling_seed is not None:
-            self.arguments.add(
-                "sampling-seed",
-                str(
-                    int(self.inputs.sampling_seed)
-                    + int(self.parallel_idx.removeprefix("part"))
-                ),
-            )
+        if self.inputs.sampling_seed is not None:
+            part_index = int(self.parallel_idx.removeprefix("part") or 0)
+            self.arguments.add("sampling-seed", int(inputs.sampling_seed) + part_index)
 
         env_vars = []
         # if self.request_cpus > 1:
@@ -89,7 +90,8 @@ class ImportanceSamplingNode(AnalysisNode):
         # use different data than sampling. In that case, the generation node will not
         # be a parent of the sampling node.
         self.job.add_parent(sampling_node.job)
-        self.job.add_parent(generation_node.job)
+        if generation_node.job.dag is dag.pycondor_dag:
+            self.job.add_parent(generation_node.job)
 
         if self.inputs.simple_submission:
             _strip_unwanted_submission_keys(self.job)

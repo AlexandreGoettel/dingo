@@ -24,6 +24,31 @@ logger.name = "dingo_pipe"
 _BILBY_PIPE_V1_8 = version.parse(bilby_pipe.__version__) >= version.parse("1.8.0")
 
 
+def add_sampling_retry_arguments(parser):
+    """Share retry limits and defaults between pipeline and result commands."""
+    parser.add_argument(
+        "--min-rss", "--min_rss", type=int, default=5000,
+        help="Minimum rejection-sample count after importance sampling. "
+        "Use 0 to disable adaptive sampling.",
+    )
+    parser.add_argument(
+        "--max-n-samples", "--max_n_samples", type=noneint, default=None,
+        help="Maximum number of proposal samples requested in any additional "
+        "sampling round, including the 10000-proposal minimum. If exceeded, "
+        "finish with a low-RSS warning.",
+    )
+    parser.add_argument(
+        "--shortfall-safety-margin", "--shortfall_safety_margin", type=float, default=2.0,
+        help="Multiplier on the RSS shortfall when estimating additional proposals. "
+        "Each retry requests at least 10000 proposals.",
+    )
+    parser.add_argument(
+        "--max-retries", "--max_retries", type=int, default=1,
+        help="Maximum sampling restarts to reach min-rss. If exhausted, finish "
+        "with a low-RSS warning.",
+    )
+
+
 class StoreBoolean(argparse.Action):
     """argparse class for robust handling of booleans with configargparse
 
@@ -1610,6 +1635,7 @@ def create_parser(top_level=True, usage=None):
         help="Number of samples per batch. This is limited by the amount of GPU RAM. "
         "Default is 50000",
     )
+    add_sampling_retry_arguments(sampler_parser)
     sampler_parser.add(
         "--sampling-seed",
         type=noneint,

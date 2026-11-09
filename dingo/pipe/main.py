@@ -301,6 +301,10 @@ class MainInput(BilbyMainInput):
         self.prior_dict_updates = args.prior_dict_updates
         self.model_reference_time = args.model_reference_time
         self.sampling_seed = args.sampling_seed
+        self.min_rss = args.min_rss
+        self.max_n_samples = args.max_n_samples
+        self.max_retries = args.max_retries
+        self.shortfall_safety_margin = args.shortfall_safety_margin
 
         Input.__init__(self, args, unknown_args, print_msg=False)
 

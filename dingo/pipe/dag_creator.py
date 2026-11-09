@@ -3,6 +3,12 @@
 #
 
 import copy
+import os
+import sys
+from types import SimpleNamespace
+from urllib.parse import quote
+
+import pycondor
 
 from bilby_pipe.job_creation.dag import Dag
 from bilby_pipe.utils import BilbyPipeError, logger
@@ -14,8 +20,18 @@ from .nodes.merge_node import MergeNode
 from .nodes.pe_summary_node import PESummaryNode
 from .nodes.plot_node import PlotNode, PlotPPNode
 from .nodes.sampling_node import SamplingNode
+from .sampling_retry import PRE_SKIP
+
 
 logger.name = "dingo_pipe"
+
+
+class PipelineDag(Dag):
+    def write_bash_script(self):
+        if any(isinstance(node, pycondor.Dagman) for node in self.pycondor_dag.nodes):
+            logger.info("Adaptive retry sub-DAGs require HTCondor; no bash runner generated.")
+        else:
+            super().write_bash_script()
 
 
 def get_trigger_time_list(inputs):
@@ -44,9 +60,71 @@ def get_parallel_list(inputs):
         return [f"part{idx}" for idx in range(inputs.n_parallel)]
 
 
+def generate_sampling_rounds(
+    inputs, sampling_node, generation_node, proposal_generation_node, dag
+):
+    """Build one event's importance-sampling rounds and return its final result node."""
+    adaptive = inputs.min_rss > 0
+    max_retries = inputs.max_retries if adaptive else 0
+    event = sampling_node.job_name
+    decision_file = os.path.join(inputs.result_directory, event + "_retry.json")
+
+    final_result = previous_result = parent = None
+    for retry_index in range(max_retries + 1):
+        round_inputs = copy.copy(inputs)
+        round_dag = dag
+        config_file = os.path.join(inputs.result_directory, f"{event}_retry{retry_index}.ini")
+        if retry_index:
+            subdag = pycondor.Dagman(
+                name=f"{event}_retry{retry_index}_dag", submit=inputs.submit_directory,
+                dag=dag.pycondor_dag,
+            )
+            subdag.add_parent(parent)
+            # DAGMan executes PRE directly; encode the path as one argument.
+            decision_arg = quote(os.path.abspath(decision_file), safe="/")
+            command = f"{sys.executable} -m dingo.pipe.sampling_retry {decision_arg}"
+            dag.pycondor_dag.extra_lines.extend([
+                f"SCRIPT PRE {subdag.name} {command}",
+                f"PRE_SKIP {subdag.name} {PRE_SKIP}",
+            ])
+            round_dag = SimpleNamespace(pycondor_dag=subdag)
+            if inputs.sampling_seed is not None:
+                round_inputs.sampling_seed += retry_index * inputs.n_parallel
+            sampling_node = SamplingNode(
+                round_inputs, proposal_generation_node, round_dag,
+                config_file=config_file, retry_index=retry_index,
+            )
+
+        parts = [ImportanceSamplingNode(
+            round_inputs, sampling_node, generation_node, part, round_dag
+        ) for part in get_parallel_list(inputs)]
+        final_result = final_result or parts[0].final_result_file
+        options = {}
+        if adaptive:
+            options = dict(
+                previous_result=previous_result, decision_file=decision_file,
+                final_result=final_result,
+                next_config=os.path.join(inputs.result_directory,
+                                         f"{event}_retry{retry_index + 1}.ini"),
+            )
+        merged = (MergeNode(round_inputs, parts, round_dag, **options)
+                  if adaptive or len(parts) > 1 else parts[0])
+        previous_result = merged.result_file
+        parent = subdag if retry_index else merged.job
+    if not adaptive:
+        return merged
+    # Consumers wait for the whole chain and use the result published on stopping.
+    return SimpleNamespace(job=parent, result_file=final_result,
+                           label=event.replace("sampling", "importance_sampling"),
+                           job_name=event.replace("sampling", "importance_sampling"))
+
+
 def generate_dag(inputs):
     inputs = copy.deepcopy(inputs)
-    dag = Dag(inputs)
+    if (inputs.importance_sample and inputs.min_rss > 0 and inputs.max_retries > 0
+            and (inputs.run_local or inputs.scheduler.lower() != "condor")):
+        raise NotImplementedError("Adaptive retry jobs require HTCondor (not local or Slurm).")
+    dag = PipelineDag(inputs)
     trigger_times = get_trigger_time_list(inputs)
 
     if inputs.simple_submission:
@@ -115,35 +193,13 @@ def generate_dag(inputs):
         # importance sampling, depending on the waveform model. Indeed, IMRPhenomXPHM
         # waveform modes are much more expensive to generate than polarizations.
 
-        merged_importance_sampling_node_list = []
-        parallel_list = get_parallel_list(inputs)
-        all_parallel_node_list = []
-        for sampling_node, generation_node in zip(
-            sampling_node_list, importance_sampling_generation_node_list
-        ):
-            parallel_node_list = []
-            for parallel_idx in parallel_list:
-                importance_sampling_node = ImportanceSamplingNode(
-                    inputs,
-                    sampling_node=sampling_node,
-                    generation_node=generation_node,
-                    parallel_idx=parallel_idx,
-                    dag=dag,
-                )
-                parallel_node_list.append(importance_sampling_node)
-                all_parallel_node_list.append(importance_sampling_node)
-
-            if len(parallel_node_list) == 1:
-                merged_importance_sampling_node_list.append(importance_sampling_node)
-            else:
-                # 4.(b) Recombine jobs into single Result.
-                #       (Automatically calculates evidence.)
-                merge_node = MergeNode(
-                    inputs=inputs,
-                    parallel_node_list=parallel_node_list,
-                    dag=dag,
-                )
-                merged_importance_sampling_node_list.append(merge_node)
+        merged_importance_sampling_node_list = [
+            generate_sampling_rounds(inputs, sampling, generation, proposal, dag)
+            for sampling, generation, proposal in zip(
+                sampling_node_list, importance_sampling_generation_node_list,
+                generation_node_list,
+            )
+        ]
 
     else:
         merged_importance_sampling_node_list = sampling_node_list
@@ -152,10 +208,9 @@ def generate_dag(inputs):
     # 5. Plotting
     #
 
-    plot_nodes_list = []
     for merged_node in merged_importance_sampling_node_list:
         if inputs.plot_node_needed:
-            plot_nodes_list.append(PlotNode(inputs, merged_node, dag=dag))
+            PlotNode(inputs, merged_node, dag=dag)
 
     if inputs.plot_pp:
         PlotPPNode(inputs, merged_importance_sampling_node_list, dag=dag)
@@ -170,10 +225,3 @@ def generate_dag(inputs):
         )
 
     dag.build()
-    # create_overview(
-    #     inputs,
-    #     generation_node_list,
-    #     all_parallel_node_list,
-    #     merged_node_list,
-    #     plot_nodes_list,
-    # )

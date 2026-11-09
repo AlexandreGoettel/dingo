@@ -9,7 +9,7 @@ from dingo.pipe.utils import (
 
 
 class SamplingNode(AnalysisNode):
-    def __init__(self, inputs, generation_node, dag):
+    def __init__(self, inputs, generation_node, dag, config_file=None, retry_index=0):
         retry = 3 if inputs.osg else None
         super(AnalysisNode, self).__init__(inputs, retry=retry)
         self.dag = dag
@@ -19,15 +19,22 @@ class SamplingNode(AnalysisNode):
 
         data_label = generation_node.job_name
         base_name = data_label.replace("generation", "sampling")
+        if retry_index:
+            base_name += f"_retry{retry_index}"
         self.job_name = base_name
         self.label = self.job_name
 
-        self.setup_arguments()
+        self.setup_arguments(add_ini=config_file is None,
+                             add_command_line_args=config_file is None)
+        if config_file is not None:
+            self.arguments.argument_list.insert(0, config_file)
 
 
         # Add extra arguments for dingo
         self.arguments.add("label", self.label)
         self.arguments.add("event-data-file", generation_node.event_data_file)
+        if inputs.sampling_seed is not None:
+            self.arguments.add("sampling-seed", inputs.sampling_seed)
 
         self.extra_lines.extend(self._checkpoint_submit_lines())
         env_vars = []
@@ -48,7 +55,7 @@ class SamplingNode(AnalysisNode):
         if self.inputs.transfer_files or self.inputs.osg:
             input_files_to_transfer = [
                 str(generation_node.event_data_file),
-                str(self.inputs.complete_ini_file),
+                str(config_file or self.inputs.complete_ini_file),
             ]
             if self.inputs.osg:
                 sites = self.inputs.gpu_desired_sites
@@ -71,7 +78,8 @@ class SamplingNode(AnalysisNode):
             self.arguments.add("outdir", os.path.relpath(self.inputs.outdir))
 
         self.process_node()
-        self.job.add_parent(generation_node.job)
+        if generation_node.job.dag is dag.pycondor_dag:
+            self.job.add_parent(generation_node.job)
 
         if self.inputs.simple_submission:
             _strip_unwanted_submission_keys(self.job)
