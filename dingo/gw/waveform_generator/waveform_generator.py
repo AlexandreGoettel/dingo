@@ -35,6 +35,8 @@ from dingo.gw.transforms.waveform_transforms import DecimateAll
 # Highest ell each approximant returns by default, used to size the DFT phase grid
 # when mode_list is not given (LAL exposes no API to query an approximant's mode content)
 DEFAULT_ELL_MAX = {
+    # Pv2 has quadrupolar content; use five phase evaluations for its DFT.
+    "IMRPhenomPv2": 2,
     "IMRPhenomXPHM": 4,
     # Through the DFT only: dingo's individual-mode route does not reproduce
     # IMRPhenomXPNR's polarizations (mismatch ~1e-3), so it is not enabled for it.
